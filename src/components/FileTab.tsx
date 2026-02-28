@@ -202,7 +202,7 @@ export default function FileTab() {
     // -----------------------------------------------------------------------
 
     return (
-        <div>
+        <div className="flex flex-col h-full">
             {/* Zone de dépôt */}
             <div
                 onDragOver={(e) => {
@@ -212,9 +212,9 @@ export default function FileTab() {
                 onDragLeave={() => setIsDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => inputRef.current?.click()}
-                className={`border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-colors ${isDragOver
-                    ? "border-foreground bg-neutral-100"
-                    : "border-border hover:border-neutral-400"
+                className={`border border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${isDragOver
+                    ? "border-foreground bg-neutral-50"
+                    : "border-border hover:border-neutral-400 bg-white"
                     }`}
             >
                 <input
@@ -225,89 +225,116 @@ export default function FileTab() {
                     onChange={handleFileInput}
                     className="hidden"
                 />
-                <div className="text-muted text-sm">
-                    <p className="font-medium text-foreground mb-1">
-                        Déposez vos fichiers ici
-                    </p>
-                    <p>
-                        ou cliquez pour sélectionner — PDF, DOCX, TXT (max {MAX_FILES}{" "}
-                        fichiers, 4.5 Mo chacun)
-                    </p>
+                <div className="flex flex-col items-center justify-center gap-3">
+                    <div className={`p-3 rounded-full transition-colors ${isDragOver ? "bg-neutral-200" : "bg-neutral-100"}`}>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-foreground">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="17 8 12 3 7 8" />
+                            <line x1="12" x2="12" y1="3" y2="15" />
+                        </svg>
+                    </div>
+                    <div className="text-sm">
+                        <p className="font-medium text-foreground mb-1">
+                            Déposez vos fichiers ici
+                        </p>
+                        <p className="text-muted text-xs">
+                            PDF, DOCX, TXT (max {MAX_FILES} fichiers, 4.5 Mo)
+                        </p>
+                    </div>
                 </div>
             </div>
 
             {/* Liste des fichiers */}
             {files.length > 0 && (
-                <div className="mt-4 space-y-2">
-                    {/* Bouton tout télécharger */}
-                    {files.some((f) => f.status === "done") && (
-                        <div className="flex justify-end mb-2">
+                <div className="mt-6 flex-1 flex flex-col min-h-0">
+                    <div className="flex items-center justify-between mb-3 shrink-0">
+                        <h3 className="text-xs font-medium text-muted uppercase tracking-wider">Fichiers ({files.length})</h3>
+                        {files.some((f) => f.status === "done") && (
                             <button
                                 onClick={downloadAll}
-                                className="px-4 py-1.5 text-sm font-medium bg-foreground text-background rounded-md hover:opacity-90 transition-opacity"
+                                className="px-3 py-1 text-xs font-medium bg-foreground text-background rounded-md hover:bg-neutral-800 transition-colors"
                             >
                                 Tout télécharger
                             </button>
-                        </div>
-                    )}
+                        )}
+                    </div>
 
-                    {files.map((tf) => (
-                        <div
-                            key={tf.id}
-                            className="flex items-center justify-between border border-border rounded-md px-4 py-3 text-sm"
-                        >
-                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                                {/* Indicateur de statut */}
-                                {tf.status === "processing" && (
-                                    <span className="shrink-0 w-4 h-4 border-2 border-foreground border-t-transparent rounded-full animate-spin" />
-                                )}
-                                {tf.status === "done" && (
-                                    <span className="shrink-0 text-foreground">✓</span>
-                                )}
-                                {tf.status === "error" && (
-                                    <span className="shrink-0 text-red-600">✕</span>
-                                )}
-                                {tf.status === "pending" && (
-                                    <span className="shrink-0 w-4 h-4 bg-neutral-300 rounded-full" />
-                                )}
+                    <div className="space-y-2 overflow-y-auto pr-2 pb-2">
+                        {files.map((tf) => (
+                            <div
+                                key={tf.id}
+                                className="group flex items-center justify-between border border-border bg-white rounded-lg px-4 py-3 text-sm hover:border-neutral-300 transition-colors"
+                            >
+                                <div className="flex items-center gap-3 min-w-0 flex-1">
+                                    {/* Indicateur de statut avec SVG minimalistes */}
+                                    {tf.status === "processing" && (
+                                        <svg className="shrink-0 w-4 h-4 text-neutral-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    )}
+                                    {tf.status === "done" && (
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-green-600">
+                                            <polyline points="20 6 9 17 4 12" />
+                                        </svg>
+                                    )}
+                                    {tf.status === "error" && (
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-red-500">
+                                            <line x1="18" y1="6" x2="6" y2="18" />
+                                            <line x1="6" y1="6" x2="18" y2="18" />
+                                        </svg>
+                                    )}
+                                    {tf.status === "pending" && (
+                                        <div className="shrink-0 w-4 h-4 rounded-full border border-neutral-200" />
+                                    )}
 
-                                <span className="truncate">{tf.file.name}</span>
-                                <span className="text-muted text-xs">
-                                    ({Math.max(1, Math.ceil(tf.file.size / 1024))} Ko)
-                                </span>
-                            </div>
+                                    <div className="flex flex-col min-w-0">
+                                        <span className="truncate font-medium text-foreground text-[13px]">{tf.file.name}</span>
+                                        <span className="text-muted text-[11px]">
+                                            {Math.max(1, Math.ceil(tf.file.size / 1024))} Ko
+                                        </span>
+                                    </div>
+                                </div>
 
-                            <div className="flex items-center gap-3">
-                                {tf.status === "done" && tf.downloadUrl && (
-                                    <a
-                                        href={tf.downloadUrl}
-                                        download={tf.downloadName}
-                                        className="text-xs font-semibold text-foreground hover:underline transition-all"
+                                <div className="flex items-center gap-3 ml-4">
+                                    {tf.status === "done" && tf.downloadUrl && (
+                                        <a
+                                            href={tf.downloadUrl}
+                                            download={tf.downloadName}
+                                            className="text-xs font-medium text-foreground hover:text-neutral-500 transition-colors"
+                                        >
+                                            Télécharger
+                                        </a>
+                                    )}
+                                    {tf.status === "error" && tf.error && (
+                                        <span className="text-[11px] text-red-500 max-w-32 truncate" title={tf.error}>
+                                            {tf.error}
+                                        </span>
+                                    )}
+                                    <button
+                                        onClick={() => removeFile(tf.id)}
+                                        className="text-muted hover:text-red-500 transition-colors p-1 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                        aria-label="Supprimer"
                                     >
-                                        Télécharger
-                                    </a>
-                                )}
-                                {tf.status === "error" && tf.error && (
-                                    <span className="text-xs text-red-600 max-w-48 truncate">
-                                        {tf.error}
-                                    </span>
-                                )}
-                                <button
-                                    onClick={() => removeFile(tf.id)}
-                                    className="text-muted hover:text-foreground text-xs"
-                                >
-                                    Supprimer
-                                </button>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M3 6h18" />
+                                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                                        </svg>
+                                    </button>
+                                </div>
                             </div>
-                        </div>
-                    ))}
+                        ))}
+                    </div>
 
-                    <button
-                        onClick={clearFiles}
-                        className="mt-2 text-xs text-muted hover:text-foreground transition-colors"
-                    >
-                        Tout effacer
-                    </button>
+                    <div className="mt-2 shrink-0">
+                        <button
+                            onClick={clearFiles}
+                            className="text-[11px] text-muted hover:text-foreground transition-colors uppercase tracking-wide"
+                        >
+                            Tout effacer
+                        </button>
+                    </div>
                 </div>
             )}
         </div>

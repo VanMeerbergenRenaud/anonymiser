@@ -5,62 +5,73 @@ import FileTab from "@/components/FileTab";
 import TextTab from "@/components/TextTab";
 
 // ---------------------------------------------------------------------------
-// Page principale
+// Main Application Display
 // ---------------------------------------------------------------------------
 
-/**
- * Page d'accueil de l'application d'anonymisation.
- *
- * Deux onglets :
- * - **Fichiers** : upload de documents (PDF, DOCX, TXT) pour anonymisation automatique.
- * - **Texte** : saisie libre de texte à anonymiser.
- */
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"files" | "text">("files");
 
   return (
-    <main className="min-h-screen flex flex-col items-center px-4 py-12">
-      {/* En-tête */}
-      <div className="w-full max-w-2xl mb-10">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-          Anonymiseur
-        </h1>
-        <p className="mt-1 text-sm text-muted">
-          Anonymisation de documents juridiques
-        </p>
-      </div>
+    // Force the whole app into a single screen height with flex centering.
+    // The background is handled by globals.css
+    <main className="h-screen w-full flex flex-col items-center justify-center p-4">
 
-      {/* Onglets */}
-      <div className="w-full max-w-2xl">
-        <div className="flex border-b border-border mb-6">
-          <button
-            onClick={() => setActiveTab("files")}
-            className={`px-4 py-2 text-sm font-medium transition-colors -mb-px ${activeTab === "files"
-                ? "border-b-2 border-foreground text-foreground"
-                : "text-muted hover:text-foreground"
-              }`}
-          >
-            Fichiers
-          </button>
-          <button
-            onClick={() => setActiveTab("text")}
-            className={`px-4 py-2 text-sm font-medium transition-colors -mb-px ${activeTab === "text"
-                ? "border-b-2 border-foreground text-foreground"
-                : "text-muted hover:text-foreground"
-              }`}
-          >
-            Texte
-          </button>
+      {/* Central Application Window */}
+      <div className="w-full max-w-2xl h-[700px] max-h-[85vh] bg-white flex flex-col rounded-2xl border border-border overflow-hidden relative shadow-sm">
+
+        {/* Header / Top Bar */}
+        <header className="px-8 py-6 border-b border-border flex items-center justify-between z-10 bg-white">
+          <div>
+            <h1 className="text-xl font-medium tracking-tight text-foreground">
+              Anonymiseur
+            </h1>
+            <p className="text-xs text-muted mt-0.5">
+              Traitement NLP local en France
+            </p>
+          </div>
+
+          {/* Minimalist Segmented Control for Tabs */}
+          <div className="flex bg-neutral-100/50 p-1 rounded-full border border-border/50">
+            <button
+              onClick={() => setActiveTab("files")}
+              className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${activeTab === "files"
+                ? "bg-white text-foreground border border-border/50"
+                : "text-muted hover:text-foreground border border-transparent"
+                }`}
+            >
+              Fichiers
+            </button>
+            <button
+              onClick={() => setActiveTab("text")}
+              className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${activeTab === "text"
+                ? "bg-white text-foreground border border-border/50"
+                : "text-muted hover:text-foreground border border-transparent"
+                }`}
+            >
+              Texte
+            </button>
+          </div>
+        </header>
+
+        {/* Dynamic Content Area */}
+        <div className="flex-1 overflow-hidden relative">
+          <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === "files" ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"}`}>
+            <div className="h-full p-8 overflow-y-auto">
+              <FileTab />
+            </div>
+          </div>
+          <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === "text" ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"}`}>
+            <div className="h-full p-8 overflow-y-auto">
+              <TextTab />
+            </div>
+          </div>
         </div>
 
-        {/* Contenu de l'onglet actif */}
-        {activeTab === "files" && <FileTab />}
-        {activeTab === "text" && <TextTab />}
       </div>
 
-      {/* Pied de page */}
-      <footer className="mt-auto pt-12 pb-4 text-xs text-muted">
-        Traitement local via Presidio — aucune donnée n&apos;est stockée.
+      {/* Minimal Footer Footer */}
+      <footer className="mt-8 text-[11px] text-muted tracking-wide uppercase">
+        Presidio Local Processing — Privacy First
       </footer>
     </main>
   );

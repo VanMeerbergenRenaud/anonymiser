@@ -66,3 +66,12 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
 ## Confidentialité
 
 Toute l'analyse est effectuée **localement**. Aucune donnée sensible n'est enregistrée ni envoyée à un tiers.
+
+
+Pour lancer le projet en local :
+
+Terminal 1
+$ npm run dev:api
+
+Terminal 2 
+$ npm run dev

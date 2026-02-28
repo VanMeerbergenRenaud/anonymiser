@@ -79,40 +79,82 @@ export default function TextTab() {
     // -----------------------------------------------------------------------
 
     return (
-        <div>
-            <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Collez votre texte ici…"
-                rows={8}
-                className="w-full border border-border rounded-md px-4 py-3 text-sm resize-y focus:outline-none focus:border-neutral-400 bg-white placeholder:text-neutral-400"
-            />
+        <div className="flex flex-col h-full relative">
+            {!anonymizedText ? (
+                <div className="flex flex-col h-full bg-white rounded-xl border border-border overflow-hidden">
+                    <textarea
+                        value={inputText}
+                        onChange={(e) => setInputText(e.target.value)}
+                        placeholder="Collez le texte à anonymiser ici..."
+                        className="flex-1 w-full p-6 text-sm resize-none focus:outline-none bg-transparent placeholder:text-neutral-400 leading-relaxed"
+                    />
 
-            <button
-                onClick={handleAnonymize}
-                disabled={isProcessing || !inputText.trim()}
-                className="mt-3 px-5 py-2 text-sm font-medium bg-foreground text-background rounded-md hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-                {isProcessing && (
-                    <span className="w-3.5 h-3.5 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                )}
-                Anonymiser
-            </button>
+                    <div className="border-t border-border p-4 bg-neutral-50 flex items-center justify-between shrink-0">
+                        <div className="text-xs text-muted flex items-center gap-2">
+                            {error && <span className="text-red-500">{error}</span>}
+                        </div>
 
-            {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-
-            {anonymizedText && (
-                <div className="mt-6">
-                    <div className="flex items-center justify-between mb-2">
-                        <h2 className="text-sm font-medium text-foreground">Résultat</h2>
                         <button
-                            onClick={handleCopy}
-                            className="text-xs text-muted hover:text-foreground transition-colors"
+                            onClick={handleAnonymize}
+                            disabled={isProcessing || !inputText.trim()}
+                            className="px-6 py-2 text-sm font-medium bg-foreground text-background rounded-lg hover:bg-neutral-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                         >
-                            {copied ? "Copié ✓" : "Copier le texte"}
+                            {isProcessing && (
+                                <svg className="w-4 h-4 text-background animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                            )}
+                            Anonymiser
                         </button>
                     </div>
-                    <div className="border border-border rounded-md px-4 py-3 text-sm whitespace-pre-wrap bg-white leading-relaxed">
+                </div>
+            ) : (
+                <div className="flex flex-col h-full bg-white rounded-xl border border-border overflow-hidden">
+                    <div className="border-b border-border p-4 bg-neutral-50 flex items-center justify-between shrink-0">
+                        <div className="flex items-center gap-3">
+                            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-green-100 text-green-700">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                            </span>
+                            <h3 className="text-sm font-medium text-foreground">Texte anonymisé</h3>
+                        </div>
+                        <div className="flex flex-row gap-2">
+                            <button
+                                onClick={() => {
+                                    setAnonymizedText("");
+                                    setInputText("");
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-neutral-200/50 rounded-md transition-colors"
+                            >
+                                Recommencer
+                            </button>
+                            <button
+                                onClick={handleCopy}
+                                className="px-4 py-1.5 text-xs font-medium bg-white border border-border text-foreground rounded-md hover:bg-neutral-50 transition-colors flex items-center gap-2"
+                            >
+                                {copied ? (
+                                    <>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600">
+                                            <polyline points="20 6 9 17 4 12" />
+                                        </svg>
+                                        Copié !
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                        </svg>
+                                        Copier
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 p-6 text-sm whitespace-pre-wrap bg-transparent leading-relaxed overflow-y-auto selection:bg-neutral-200">
                         {anonymizedText}
                     </div>
                 </div>
