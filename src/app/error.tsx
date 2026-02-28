@@ -19,11 +19,11 @@ export default function Error({
             <div className="w-full max-w-md p-6 bg-white border border-border rounded-lg shadow-sm text-center">
                 <h2 className="text-xl font-semibold mb-3 text-red-600">Une erreur inattendue est survenue</h2>
                 <p className="text-sm text-muted mb-6">
-                    L'application a rencontré un problème. Veuillez réessayer ou recharger la page.
+                    L’application a rencontré un problème. Veuillez réessayer ou recharger la page.
                 </p>
                 <button
                     onClick={() => reset()}
-                    className="px-5 py-2 text-sm font-medium bg-foreground text-background rounded-md hover:opacity-90 transition-opacity"
+                    className="px-5 py-2 text-sm font-medium bg-foreground text-background rounded-lg hover:opacity-90 transition-opacity"
                 >
                     Réessayer
                 </button>

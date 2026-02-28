@@ -9,7 +9,7 @@
   --accent: #000000;
 
   /* Background pattern colors */
-  --grid-line: rgba(0, 0, 0, 0.03);
+  --grid-line: rgba(0, 0, 0, 0.08);
 }
 
 @theme inline {
@@ -26,19 +26,25 @@ body {
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  /* Hide scrollbar to enforce one-screen design */
+}
 
-  /* Minimalist grid pattern */
+body::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -10;
+  pointer-events: none;
   background-image:
     linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
     linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
   background-position: 0 0;
-
-  /* Slow idle animation */
   animation: backgroundMove 60s linear infinite;
-
-  /* Hide scrollbar to enforce one-screen design */
-  overflow: hidden;
 }
 
 @keyframes backgroundMove {

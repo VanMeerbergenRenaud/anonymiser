@@ -97,7 +97,7 @@ export default function TextTab() {
                         <button
                             onClick={handleAnonymize}
                             disabled={isProcessing || !inputText.trim()}
-                            className="px-6 py-2 text-sm font-medium bg-foreground text-background rounded-lg hover:bg-neutral-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="px-6 py-2 text-sm font-medium bg-foreground text-background rounded-lg hover:bg-neutral-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer"
                         >
                             {isProcessing && (
                                 <svg className="w-4 h-4 text-background animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -126,13 +126,17 @@ export default function TextTab() {
                                     setAnonymizedText("");
                                     setInputText("");
                                 }}
-                                className="px-3 py-1.5 text-xs font-medium text-muted hover:text-foreground hover:bg-neutral-200/50 rounded-md transition-colors"
+                                className="p-1.5 text-muted hover:text-foreground hover:bg-neutral-200/50 rounded-lg transition-colors cursor-pointer"
+                                title="Recommencer"
                             >
-                                Recommencer
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                                    <path d="M3 3v5h5" />
+                                </svg>
                             </button>
                             <button
                                 onClick={handleCopy}
-                                className="px-4 py-1.5 text-xs font-medium bg-white border border-border text-foreground rounded-md hover:bg-neutral-50 transition-colors flex items-center gap-2"
+                                className="px-4 py-1.5 text-xs font-medium bg-white border border-border text-foreground rounded-lg hover:bg-neutral-50 transition-colors flex items-center gap-2 cursor-pointer"
                             >
                                 {copied ? (
                                     <>

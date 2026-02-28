@@ -26,15 +26,15 @@ export default function Home() {
               Anonymiseur
             </h1>
             <p className="text-xs text-muted mt-0.5">
-              Traitement NLP local en France
+              Traitement NLP local en Belgique
             </p>
           </div>
 
           {/* Minimalist Segmented Control for Tabs */}
-          <div className="flex bg-neutral-100/50 p-1 rounded-full border border-border/50">
+          <div className="flex bg-neutral-100/50 p-0.5 rounded-lg border border-border/50">
             <button
               onClick={() => setActiveTab("files")}
-              className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${activeTab === "files"
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-300 cursor-pointer ${activeTab === "files"
                 ? "bg-white text-foreground border border-border/50"
                 : "text-muted hover:text-foreground border border-transparent"
                 }`}
@@ -43,7 +43,7 @@ export default function Home() {
             </button>
             <button
               onClick={() => setActiveTab("text")}
-              className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${activeTab === "text"
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-300 cursor-pointer ${activeTab === "text"
                 ? "bg-white text-foreground border border-border/50"
                 : "text-muted hover:text-foreground border border-transparent"
                 }`}
@@ -56,12 +56,12 @@ export default function Home() {
         {/* Dynamic Content Area */}
         <div className="flex-1 overflow-hidden relative">
           <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === "files" ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"}`}>
-            <div className="h-full p-8 overflow-y-auto">
+            <div className="h-full p-6 overflow-y-auto">
               <FileTab />
             </div>
           </div>
           <div className={`absolute inset-0 transition-opacity duration-300 ${activeTab === "text" ? "opacity-100 z-10" : "opacity-0 -z-10 pointer-events-none"}`}>
-            <div className="h-full p-8 overflow-y-auto">
+            <div className="h-full p-6 overflow-y-auto">
               <TextTab />
             </div>
           </div>
@@ -71,7 +71,10 @@ export default function Home() {
 
       {/* Minimal Footer Footer */}
       <footer className="mt-8 text-[11px] text-muted tracking-wide uppercase">
-        Presidio Local Processing — Privacy First
+        Réaliser par&nbsp;
+        <a href="https://renaud-vmb.com" title="Vers le site du créateur" className="underline" target="_blank">
+          Renaud Vmb
+        </a>
       </footer>
     </main>
   );
