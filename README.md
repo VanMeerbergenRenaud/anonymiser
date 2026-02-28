@@ -1,5 +1,68 @@
-Salut, j'aimerais créer un site d'anonymisation de documents pour mon travail en tant que juriste. J'aimerais que tu me proposes le meilleur plan possible pour le transmettre à l'IA et obtenir le meilleur site d'anonymisation. La première fonctionnalité devrait permettre de traiter un document volumineux au format TXT, PDF ou Word. L'objectif est d'anonymiser les noms, prénoms, lieux et autres informations pouvant nuire à une personne, comme les dates de naissance et les codes postaux.
+# Anonymiseur de Documents Juridiques
 
-La deuxième fonctionnalité devrait permettre d'anonymiser un texte que je peux copier-coller. Ne réalise aucun design dans un premier temps. Tu peux utiliser Tailwind pour concevoir la page afin que ce soit rapide et fonctionnel, mais je m'occuperai du design moi-même. Prévoyez juste le strict minimum pour l'interface utilisateur.
+Une application web locale pour l'anonymisation automatique de documents juridiques et de textes libres, conçue pour les professionnels du droit.
 
-Pour le code et les fonctionnalités, elles doivent être aussi complètes que possible et fonctionner parfaitement. Je déploierai mon site sur Vercel, donc utilise des technologies compatibles avec cet hébergeur. Je ne sais pas encore quelle technologie utiliser pour réaliser les fonctionnalités, mais cela peut être un package, Python ou autre. Fais au mieux pour que ce soit simple et que cela fonctionne extrêmement bien. L'objectif est vraiment d'ajouter un ou plusieurs fichiers (maximum 5) et qu'ils se téléchargent anonymisés automatiquement dès que je les ajoute au site.
+## Fonctionnalités
+
+- **Anonymisation de Fichiers** : Supporte les formats `.txt`, `.docx` et `.pdf`.
+  - Remplace les entités dans le texte et les tableaux.
+  - Supprime automatiquement les images intégrées.
+  - Déposez jusqu'à 5 fichiers simultanément (max 4.5 Mo chacun).
+- **Anonymisation de Texte Libre** : Collez un texte directement dans l'interface pour une anonymisation instantanée.
+- **Entités Détectées** : 
+  - Noms et prénoms (`[PERSONNE]`)
+  - Lieux et adresses (`[LIEU]`)
+  - Dates et dates de naissance (`[DATE]`, `[DATE_NAISSANCE]`)
+  - Coordonnées : emails, numéros de téléphone (`[EMAIL]`, `[TÉLÉPHONE]`)
+  - Données bancaires : IBAN (`[IBAN]`), Cartes bancaires (`[CARTE_BANCAIRE]`)
+  - Identifiants : Numéro de sécurité sociale (`[NIR]`), Numéro de rôle/FA (`[ROLE]`)
+  - Entreprises (`[SOCIÉTÉ]`)
+
+## Architecture technique
+
+- **Frontend** : Next.js (App Router), React, Tailwind CSS
+- **Backend NLP** : Python, Flask, Presidio (Microsoft), spaCy (modèle `fr_core_news_md`)
+- **Manipulation de fichiers** : PyMuPDF (`fitz`) pour les PDF, `python-docx` pour Word
+
+## Prérequis
+
+- Node.js (v18+)
+- Python 3.11+
+
+## Installation locale
+
+1. **Installer les dépendances frontend :**
+   ```bash
+   npm install
+   ```
+
+2. **Créer et activer un environnement virtuel Python :**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Installer les dépendances backend :**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Développement
+
+1. **Démarrer le backend interactif (Flask) :**
+   Le serveur tournera sur le port `5328`.
+   ```bash
+   npm run dev:api
+   ```
+
+2. **Démarrer le frontend (Next.js) :**
+   Sur un autre terminal, lancez le frontend :
+   ```bash
+   npm run dev
+   ```
+
+3. Ouvrez http://localhost:3000 dans votre navigateur.
+
+## Confidentialité
+
+Toute l'analyse est effectuée **localement**. Aucune donnée sensible n'est enregistrée ni envoyée à un tiers.

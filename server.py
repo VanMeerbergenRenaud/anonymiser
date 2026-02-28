@@ -1,101 +1,149 @@
-import os
+"""
+server.py — Serveur Flask pour le développement local.
+
+Ce serveur expose les endpoints d'anonymisation de texte et de fichiers.
+En production (Vercel), les fichiers ``api/*.py`` sont servis directement
+comme serverless functions.
+
+Endpoints
+---------
+- ``POST /api/anonymize_text`` : anonymise un texte brut (JSON ``{"text": "..."}``)
+- ``POST /api/anonymize_file`` : anonymise un fichier uploadé (multipart/form-data)
+
+Usage
+-----
+::
+
+    source venv/bin/activate
+    python server.py
+
+Le serveur démarre sur ``http://127.0.0.1:5328``.
+"""
+
+from __future__ import annotations
+
 import json
 import logging
-from flask import Flask, request, jsonify, send_file, Response
+import os
+
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
-import io
 
-# Import processing logic from the API files
-import api.anonymize_text as target_anonymize_text
-import api.anonymize_file as target_anonymize_file
+import api.anonymize_text as text_module
+import api.anonymize_file as file_module
 
-# Set up logging
+# ---------------------------------------------------------------------------
+# Configuration du logging
+# ---------------------------------------------------------------------------
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Application Flask
+# ---------------------------------------------------------------------------
+
 app = Flask(__name__)
-# Enable CORS for Next.js frontend
-CORS(app)
+CORS(app)  # Autorise les requêtes du frontend Next.js
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 Mo
 
-# Increase max payload size to match Next.js logic
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB
 
-@app.route('/api/anonymize_text', methods=['POST'])
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/anonymize_text", methods=["POST"])
 def anonymize_text():
+    """Anonymise un texte brut envoyé au format JSON.
+
+    Attend un corps JSON ``{"text": "..."}`` et retourne
+    ``{"anonymized": "..."}``.
+    """
     try:
         data = request.get_json()
-        if not data or 'text' not in data:
+        if not data or "text" not in data:
             return jsonify({"error": "Le champ 'text' est vide."}), 400
 
         text = data.get("text", "")
         if not text.strip():
             return jsonify({"error": "Le champ 'text' est vide."}), 400
 
-        # Run text anonymization
-        result = target_anonymize_text.anonymize_text(text)
-        
+        result = text_module.anonymize_text(text)
         return jsonify({"anonymized": result})
 
     except json.JSONDecodeError:
         return jsonify({"error": "JSON invalide."}), 400
     except Exception as e:
-        logger.error(f"Error in anonymize-text: {e}", exc_info=True)
-        return jsonify({"error": f"Erreur interne : {str(e)}"}), 500
+        logger.error("Error in anonymize-text: %s", e, exc_info=True)
+        return jsonify({"error": f"Erreur interne : {e}"}), 500
 
-@app.route('/api/anonymize_file', methods=['POST'])
+
+# Correspondance extension → Content-Type pour les fichiers anonymisés
+_CONTENT_TYPES: dict[str, str] = {
+    ".txt": "text/plain; charset=utf-8",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf": "application/pdf",
+}
+
+# Correspondance extension → fonction de traitement
+_PROCESSORS = {
+    ".txt": file_module._process_txt,
+    ".docx": file_module._process_docx,
+    ".pdf": file_module._process_pdf,
+}
+
+
+@app.route("/api/anonymize_file", methods=["POST"])
 def anonymize_file():
+    """Anonymise un fichier uploadé via multipart/form-data.
+
+    Attend un champ ``file`` contenant le document (PDF, DOCX ou TXT).
+    Retourne le fichier anonymisé en téléchargement direct.
+    """
     try:
-        # Flask provides the parsed files in request.files
-        if 'file' not in request.files:
+        if "file" not in request.files:
             return jsonify({"error": "Aucun fichier valide reçu."}), 400
-            
-        file = request.files['file']
-        if file.filename == '':
+
+        file = request.files["file"]
+        if file.filename == "":
             return jsonify({"error": "Aucun fichier valide reçu."}), 400
-            
+
         filename = file.filename
         ext = os.path.splitext(filename)[1].lower()
         file_data = file.read()
-        
-        # Check size (max 4.5 Mo as defined in frontend)
-        if len(file_data) > 4.5 * 1024 * 1024:
+
+        # Vérification de la taille
+        if len(file_data) > file_module.MAX_FILE_SIZE:
             return jsonify({"error": "Le fichier est trop volumineux (max 4.5 Mo)."}), 413
 
-        # Process based on file extension
-        if ext == ".txt":
-            result_data = target_anonymize_file._process_txt(file_data)
-            content_type = "text/plain; charset=utf-8"
-        elif ext == ".docx":
-            result_data = target_anonymize_file._process_docx(file_data)
-            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        elif ext == ".pdf":
-            result_data = target_anonymize_file._process_pdf(file_data)
-            content_type = "application/pdf"
-        else:
-            return jsonify({"error": f"Format non supporté : {ext}. Formats acceptés : .txt, .docx, .pdf"}), 400
+        # Vérification du format
+        processor = _PROCESSORS.get(ext)
+        if processor is None:
+            return jsonify({
+                "error": f"Format non supporté : {ext}. Formats acceptés : .txt, .docx, .pdf"
+            }), 400
 
-        # Build anonymized filename
+        result_data = processor(file_data)
         anon_filename = f"a-{filename}"
 
-        # Send response exactly as frontend expects
-        response = Response(
+        return Response(
             result_data,
-            mimetype=content_type,
+            mimetype=_CONTENT_TYPES[ext],
             headers={
                 "Content-Disposition": f'attachment; filename="{anon_filename}"',
-                "X-Filename": anon_filename
-            }
+                "X-Filename": anon_filename,
+            },
         )
-        return response
 
     except Exception as e:
-        logger.error(f"Error in anonymize-file: {e}", exc_info=True)
-        return jsonify({"error": f"Erreur lors du traitement du fichier : {str(e)}"}), 500
+        logger.error("Error in anonymize-file: %s", e, exc_info=True)
+        return jsonify({"error": f"Erreur lors du traitement du fichier : {e}"}), 500
 
-if __name__ == '__main__':
-    # Add root folder to sys.path so 'api' module can be imported correctly
-    import sys
-    sys.path.append(os.path.dirname(os.path.abspath(__name__)))
-    
+
+# ---------------------------------------------------------------------------
+# Point d'entrée
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
     print("Starting Flask server for local development on http://127.0.0.1:5328")
-    app.run(host='127.0.0.1', port=5328, debug=True)
+    app.run(host="127.0.0.1", port=5328, debug=True)
