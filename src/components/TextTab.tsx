@@ -32,8 +32,16 @@ export default function TextTab() {
             });
 
             if (!res.ok) {
-                const err = await res.json().catch(() => ({ error: "Erreur inconnue" }));
-                throw new Error(err.error || `Erreur ${res.status}`);
+                const text = await res.text();
+                let errMsg = `Erreur ${res.status}`;
+                try {
+                    const err = JSON.parse(text);
+                    if (err.error) errMsg = err.error;
+                } catch {
+                    // Fallback for HTML error pages (e.g. 500/502 from Next.js server)
+                    errMsg = `Erreur de connexion au serveur (${res.status}). Veuillez vérifier que le serveur backend est lancé.`;
+                }
+                throw new Error(errMsg);
             }
 
             const data = await res.json();

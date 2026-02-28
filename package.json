@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:api": "./venv/bin/python3.11 api/index.py",
+    "dev:api": "PYTHONPATH=. ./venv/bin/python3.11 api/index.py",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

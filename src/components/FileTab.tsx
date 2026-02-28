@@ -74,8 +74,15 @@ export default function FileTab() {
             });
 
             if (!res.ok) {
-                const err = await res.json().catch(() => ({ error: "Erreur inconnue" }));
-                throw new Error(err.error || `Erreur ${res.status}`);
+                const text = await res.text();
+                let errMsg = `Erreur ${res.status}`;
+                try {
+                    const err = JSON.parse(text);
+                    if (err.error) errMsg = err.error;
+                } catch {
+                    errMsg = `Erreur de connexion au serveur (${res.status}). Veuillez vérifier que le serveur backend est lancé.`;
+                }
+                throw new Error(errMsg);
             }
 
             const blob = await res.blob();
@@ -206,8 +213,8 @@ export default function FileTab() {
                 onDrop={handleDrop}
                 onClick={() => inputRef.current?.click()}
                 className={`border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-colors ${isDragOver
-                        ? "border-foreground bg-neutral-100"
-                        : "border-border hover:border-neutral-400"
+                    ? "border-foreground bg-neutral-100"
+                    : "border-border hover:border-neutral-400"
                     }`}
             >
                 <input
@@ -266,7 +273,7 @@ export default function FileTab() {
 
                                 <span className="truncate">{tf.file.name}</span>
                                 <span className="text-muted text-xs">
-                                    ({(tf.file.size / 1024).toFixed(0)} Ko)
+                                    ({Math.max(1, Math.ceil(tf.file.size / 1024))} Ko)
                                 </span>
                             </div>
 
