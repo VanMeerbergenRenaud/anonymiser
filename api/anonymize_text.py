@@ -16,7 +16,16 @@ def _build_analyzer() -> AnalyzerEngine:
     # --- spaCy NLP engine ---------------------------------------------------
     configuration = {
         "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "fr", "model_name": "fr_core_news_sm"}],
+        "models": [{"lang_code": "fr", "model_name": "fr_core_news_md"}],
+        "ner_model_configuration": {
+            "labels_to_ignore": ["O"],
+            "model_to_presidio_entity_mapping": {
+                "PER": "PERSON",
+                "LOC": "LOCATION",
+                "ORG": "ORGANIZATION",
+                "MISC": "NRP",
+            }
+        }
     }
     provider = NlpEngineProvider(nlp_configuration=configuration)
     nlp_engine = provider.create_engine()
@@ -89,14 +98,43 @@ def _build_analyzer() -> AnalyzerEngine:
         supported_language="fr",
     )
 
+    # French role number (ending in /FA)
+    role_pattern = Pattern(
+        name="role_pattern",
+        regex=r"\b[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*/FA\b",
+        score=0.9,
+    )
+    role_recognizer = PatternRecognizer(
+        supported_entity="FR_NUM_ROLE",
+        name="French Role Number Recognizer",
+        patterns=[role_pattern],
+        supported_language="fr",
+    )
+
+    # French birth date (né le ...)
+    birth_date_pattern = Pattern(
+        name="birth_date_pattern",
+        regex=r"(?i)\bné[es]?\s+le\s+(?:\d{1,2}(?:er)?\s+(?:janvier|f[eé]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\s+\d{4}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}|\d{1,2}\s+\d{1,2}\s+\d{4})\b",
+        score=0.9,
+    )
+    birth_date_recognizer = PatternRecognizer(
+        supported_entity="FR_DATE_NAISSANCE",
+        name="French Birth Date Recognizer",
+        patterns=[birth_date_pattern],
+        supported_language="fr",
+    )
+
     # --- Registry -----------------------------------------------------------
     registry = RecognizerRegistry()
+    registry.supported_languages = ["fr"]
     registry.load_predefined_recognizers(nlp_engine=nlp_engine, languages=["fr"])
     registry.add_recognizer(nir_recognizer)
     registry.add_recognizer(iban_recognizer)
     registry.add_recognizer(phone_recognizer)
     registry.add_recognizer(postal_recognizer)
     registry.add_recognizer(email_recognizer)
+    registry.add_recognizer(role_recognizer)
+    registry.add_recognizer(birth_date_recognizer)
 
     return AnalyzerEngine(
         nlp_engine=nlp_engine,
@@ -123,6 +161,9 @@ ENTITY_LABELS: dict[str, str] = {
     "CREDIT_CARD": "CARTE_BANCAIRE",
     "IP_ADDRESS": "ADRESSE_IP",
     "URL": "URL",
+    "ORGANIZATION": "SOCIÉTÉ",
+    "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
+    "FR_NUM_ROLE": "ROLE",
 }
 
 

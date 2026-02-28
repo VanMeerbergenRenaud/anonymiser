@@ -4,7 +4,6 @@ import io
 import re
 import tempfile
 import os
-import cgi
 
 import fitz  # PyMuPDF
 from docx import Document
@@ -23,7 +22,16 @@ from presidio_anonymizer.entities import OperatorConfig
 def _build_analyzer() -> AnalyzerEngine:
     configuration = {
         "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "fr", "model_name": "fr_core_news_sm"}],
+        "models": [{"lang_code": "fr", "model_name": "fr_core_news_md"}],
+        "ner_model_configuration": {
+            "labels_to_ignore": ["O"],
+            "model_to_presidio_entity_mapping": {
+                "PER": "PERSON",
+                "LOC": "LOCATION",
+                "ORG": "ORGANIZATION",
+                "MISC": "NRP",
+            }
+        }
     }
     provider = NlpEngineProvider(nlp_configuration=configuration)
     nlp_engine = provider.create_engine()
@@ -89,13 +97,40 @@ def _build_analyzer() -> AnalyzerEngine:
         supported_language="fr",
     )
 
+    role_pattern = Pattern(
+        name="role_pattern",
+        regex=r"\b[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*/FA\b",
+        score=0.9,
+    )
+    role_recognizer = PatternRecognizer(
+        supported_entity="FR_NUM_ROLE",
+        name="French Role Number Recognizer",
+        patterns=[role_pattern],
+        supported_language="fr",
+    )
+
+    birth_date_pattern = Pattern(
+        name="birth_date_pattern",
+        regex=r"(?i)\bné[es]?\s+le\s+(?:\d{1,2}(?:er)?\s+(?:janvier|f[eé]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\s+\d{4}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}|\d{1,2}\s+\d{1,2}\s+\d{4})\b",
+        score=0.9,
+    )
+    birth_date_recognizer = PatternRecognizer(
+        supported_entity="FR_DATE_NAISSANCE",
+        name="French Birth Date Recognizer",
+        patterns=[birth_date_pattern],
+        supported_language="fr",
+    )
+
     registry = RecognizerRegistry()
+    registry.supported_languages = ["fr"]
     registry.load_predefined_recognizers(nlp_engine=nlp_engine, languages=["fr"])
     registry.add_recognizer(nir_recognizer)
     registry.add_recognizer(iban_recognizer)
     registry.add_recognizer(phone_recognizer)
     registry.add_recognizer(postal_recognizer)
     registry.add_recognizer(email_recognizer)
+    registry.add_recognizer(role_recognizer)
+    registry.add_recognizer(birth_date_recognizer)
 
     return AnalyzerEngine(
         nlp_engine=nlp_engine,
@@ -120,6 +155,9 @@ ENTITY_LABELS: dict[str, str] = {
     "CREDIT_CARD": "CARTE_BANCAIRE",
     "IP_ADDRESS": "ADRESSE_IP",
     "URL": "URL",
+    "ORGANIZATION": "SOCIÉTÉ",
+    "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
+    "FR_NUM_ROLE": "ROLE",
 }
 
 MAX_FILE_SIZE = 4.5 * 1024 * 1024  # 4.5 MB
@@ -149,10 +187,31 @@ def _process_txt(content: bytes) -> bytes:
 # DOCX processing — replace sensitive text while preserving paragraphs
 # ---------------------------------------------------------------------------
 
+def _remove_images_from_paragraph(paragraph):
+    """Remove all inline images (drawings and pictures) from a paragraph."""
+    from lxml import etree
+    nsmap = {
+        'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+        'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
+        'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+        'pic': 'http://schemas.openxmlformats.org/drawingml/2006/picture',
+        'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    }
+    # Remove <w:drawing> elements (inline and anchored images)
+    for drawing in paragraph._element.findall('.//w:drawing', nsmap):
+        drawing.getparent().remove(drawing)
+    # Remove <w:pict> elements (legacy VML images)
+    for pict in paragraph._element.findall('.//w:pict', nsmap):
+        pict.getparent().remove(pict)
+
+
 def _process_docx(content: bytes) -> bytes:
     doc = Document(io.BytesIO(content))
 
     for paragraph in doc.paragraphs:
+        # Remove images from this paragraph
+        _remove_images_from_paragraph(paragraph)
+
         full_text = paragraph.text
         if not full_text.strip():
             continue
@@ -182,6 +241,9 @@ def _process_docx(content: bytes) -> bytes:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
+                    # Remove images from table cells too
+                    _remove_images_from_paragraph(paragraph)
+
                     full_text = paragraph.text
                     if not full_text.strip():
                         continue
@@ -198,6 +260,18 @@ def _process_docx(content: bytes) -> bytes:
                         for run in paragraph.runs[1:]:
                             run.text = ""
 
+    # Remove image parts from the document package
+    try:
+        part = doc.part
+        rels_to_remove = []
+        for rel_id, rel in part.rels.items():
+            if "image" in rel.reltype:
+                rels_to_remove.append(rel_id)
+        for rel_id in rels_to_remove:
+            del part.rels[rel_id]
+    except Exception:
+        pass  # If we can't remove relationship parts, the XML elements are already gone
+
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -211,6 +285,20 @@ def _process_pdf(content: bytes) -> bytes:
     doc = fitz.open(stream=content, filetype="pdf")
 
     for page in doc:
+        # Remove all images from the page
+        image_list = page.get_images(full=True)
+        for img in image_list:
+            xref = img[0]
+            try:
+                page.delete_image(xref)
+            except Exception:
+                # Fallback: cover the image with a white rectangle
+                for img_rect in page.get_image_rects(xref):
+                    page.draw_rect(img_rect, color=(1, 1, 1), fill=(1, 1, 1))
+
+        # Clean the page contents after image removal
+        page.clean_contents()
+
         text_page = page.get_text("text")
         if not text_page.strip():
             continue
@@ -330,8 +418,7 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             # Build anonymized filename
-            name_without_ext = os.path.splitext(filename)[0]
-            anon_filename = f"{name_without_ext}_anonymise{ext}"
+            anon_filename = f"a-{filename}"
 
             self.send_response(200)
             self.send_header("Content-Type", content_type)

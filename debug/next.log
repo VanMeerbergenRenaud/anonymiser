@@ -1,0 +1,127 @@
+
+> anonymiser@0.1.0 dev
+> next dev
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.129.27:3000
+
+✓ Starting...
+✓ Ready in 600ms
+ GET / 200 in 496ms (compile: 443ms, render: 53ms)
+(node:75636) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated. Please use Object.assign() instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+ GET /test_files/test.txt 404 in 102ms (compile: 56ms, render: 46ms)
+ GET /test.txt 404 in 57ms (compile: 5ms, render: 53ms)
+ GET / 200 in 47ms (compile: 6ms, render: 41ms)
+ GET / 200 in 22ms (compile: 4ms, render: 18ms)
+ GET / 200 in 35ms (compile: 3ms, render: 32ms)
+ GET / 200 in 29ms (compile: 5ms, render: 23ms)
+ GET / 200 in 39ms (compile: 4ms, render: 35ms)
+✓ Compiled in 27ms
+ GET / 200 in 114ms (compile: 71ms, render: 42ms)
+ GET / 200 in 31ms (compile: 5ms, render: 26ms)
+ GET / 200 in 52ms (compile: 6ms, render: 46ms)
+ GET / 200 in 29ms (compile: 4ms, render: 25ms)
+ GET /apple-touch-icon.png 404 in 57ms (compile: 13ms, render: 44ms)
+ GET /apple-touch-icon-precomposed.png 404 in 62ms (compile: 34ms, render: 29ms)
+ GET / 200 in 19ms (compile: 4ms, render: 15ms)
+ GET / 200 in 37ms (compile: 8ms, render: 29ms)
+ GET / 200 in 37ms (compile: 6ms, render: 31ms)
+Failed to proxy http://127.0.0.1:5328/api/anonymize_text Error: socket hang up
+    at ignore-listed frames {
+  code: 'ECONNRESET'
+}
+Error: socket hang up
+    at ignore-listed frames {
+  code: 'ECONNRESET'
+}
+ GET / 200 in 32ms (compile: 4ms, render: 28ms)
+ GET / 200 in 24ms (compile: 3ms, render: 21ms)
+✓ Compiled in 39ms
+ GET / 200 in 43ms (compile: 9ms, render: 34ms)
+Failed to proxy http://127.0.0.1:5328/api/anonymize_text Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Failed to proxy http://127.0.0.1:5328/api/anonymize_text Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Failed to proxy http://127.0.0.1:5328/api/anonymize_file Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+ GET / 200 in 40ms (compile: 5ms, render: 35ms)
+ GET / 200 in 40ms (compile: 6ms, render: 34ms)
+ GET / 200 in 39ms (compile: 6ms, render: 33ms)
+Failed to proxy http://127.0.0.1:5328/api/anonymize_file Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+ GET / 200 in 38ms (compile: 5ms, render: 34ms)
+Failed to proxy http://127.0.0.1:5328/api/anonymize_file Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+Error: connect ECONNREFUSED 127.0.0.1:5328
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5328) {
+  errno: -61,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5328
+}
+ GET / 200 in 39ms (compile: 8ms, render: 31ms)

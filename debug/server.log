@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/Users/renaudvmb/Herd/anonymiser/server.py", line 9, in <module>
+    import api.anonymize_text as target_anonymize_text
+  File "/Users/renaudvmb/Herd/anonymiser/api/anonymize_text.py", line 109, in <module>
+    analyzer = _build_analyzer()
+               ^^^^^^^^^^^^^^^^^
+  File "/Users/renaudvmb/Herd/anonymiser/api/anonymize_text.py", line 101, in _build_analyzer
+    return AnalyzerEngine(
+           ^^^^^^^^^^^^^^^
+  File "/Users/renaudvmb/Herd/anonymiser/venv/lib/python3.11/site-packages/presidio_analyzer/analyzer_engine.py", line 87, in __init__
+    raise ValueError(
+ValueError: Misconfigured engine, supported languages have to be consistentregistry.supported_languages: ['en'], analyzer_engine.supported_languages: ['fr']

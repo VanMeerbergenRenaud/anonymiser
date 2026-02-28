@@ -13,6 +13,8 @@ interface TrackedFile {
   file: File;
   status: FileStatus;
   error?: string;
+  downloadUrl?: string;
+  downloadName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +70,7 @@ export default function Home() {
       const formData = new FormData();
       formData.append("file", tracked.file);
 
-      const res = await fetch("/api/anonymize-file", {
+      const res = await fetch("/api/anonymize_file", {
         method: "POST",
         body: formData,
       });
@@ -78,22 +80,15 @@ export default function Home() {
         throw new Error(err.error || `Erreur ${res.status}`);
       }
 
-      // Trigger automatic download
+      // Store blob URL for manual download
       const blob = await res.blob();
       const filename =
         res.headers.get("X-Filename") ||
-        tracked.file.name.replace(/(\.\w+)$/, "_anonymise$1");
+        "a-" + tracked.file.name;
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
 
       setFiles((prev) =>
-        prev.map((f) => (f.id === tracked.id ? { ...f, status: "done" as FileStatus } : f)),
+        prev.map((f) => (f.id === tracked.id ? { ...f, status: "done" as FileStatus, downloadUrl: url, downloadName: filename } : f)),
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Erreur inconnue";
@@ -167,10 +162,23 @@ export default function Home() {
   );
 
   const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
+    setFiles((prev) => {
+      const target = prev.find((f) => f.id === id);
+      if (target?.downloadUrl) {
+        URL.revokeObjectURL(target.downloadUrl);
+      }
+      return prev.filter((f) => f.id !== id);
+    });
   };
 
-  const clearFiles = () => setFiles([]);
+  const clearFiles = () => {
+    setFiles((prev) => {
+      prev.forEach((f) => {
+        if (f.downloadUrl) URL.revokeObjectURL(f.downloadUrl);
+      });
+      return [];
+    });
+  };
 
   // -----------------------------------------------------------------------
   // Text handling
@@ -184,7 +192,7 @@ export default function Home() {
     setCopied(false);
 
     try {
-      const res = await fetch("/api/anonymize-text", {
+      const res = await fetch("/api/anonymize_text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: inputText }),
@@ -245,8 +253,8 @@ export default function Home() {
           <button
             onClick={() => setActiveTab("files")}
             className={`px-4 py-2 text-sm font-medium transition-colors -mb-px ${activeTab === "files"
-                ? "border-b-2 border-foreground text-foreground"
-                : "text-muted hover:text-foreground"
+              ? "border-b-2 border-foreground text-foreground"
+              : "text-muted hover:text-foreground"
               }`}
           >
             Fichiers
@@ -254,8 +262,8 @@ export default function Home() {
           <button
             onClick={() => setActiveTab("text")}
             className={`px-4 py-2 text-sm font-medium transition-colors -mb-px ${activeTab === "text"
-                ? "border-b-2 border-foreground text-foreground"
-                : "text-muted hover:text-foreground"
+              ? "border-b-2 border-foreground text-foreground"
+              : "text-muted hover:text-foreground"
               }`}
           >
             Texte
@@ -277,8 +285,8 @@ export default function Home() {
               onDrop={handleDrop}
               onClick={() => inputRef.current?.click()}
               className={`border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-colors ${isDragOver
-                  ? "border-foreground bg-neutral-100"
-                  : "border-border hover:border-neutral-400"
+                ? "border-foreground bg-neutral-100"
+                : "border-border hover:border-neutral-400"
                 }`}
             >
               <input
@@ -303,6 +311,28 @@ export default function Home() {
             {/* File list */}
             {files.length > 0 && (
               <div className="mt-4 space-y-2">
+                {/* Download All Button */}
+                {files.some((f) => f.status === "done") && (
+                  <div className="flex justify-end mb-2">
+                    <button
+                      onClick={() => {
+                        files.forEach((f) => {
+                          if (f.status === "done" && f.downloadUrl) {
+                            const a = document.createElement("a");
+                            a.href = f.downloadUrl;
+                            a.download = f.downloadName || "anonymised.txt";
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                          }
+                        });
+                      }}
+                      className="px-4 py-1.5 text-sm font-medium bg-foreground text-background rounded-md hover:opacity-90 transition-opacity"
+                    >
+                      Tout télécharger
+                    </button>
+                  </div>
+                )}
                 {files.map((tf) => (
                   <div
                     key={tf.id}
@@ -329,7 +359,16 @@ export default function Home() {
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
+                      {tf.status === "done" && tf.downloadUrl && (
+                        <a
+                          href={tf.downloadUrl}
+                          download={tf.downloadName}
+                          className="text-xs font-semibold text-foreground hover:underline transition-all"
+                        >
+                          Télécharger
+                        </a>
+                      )}
                       {tf.status === "error" && tf.error && (
                         <span className="text-xs text-red-600 max-w-48 truncate">
                           {tf.error}
