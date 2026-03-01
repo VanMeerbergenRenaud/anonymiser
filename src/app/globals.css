@@ -1,15 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  /* Ultra-clean light theme colors */
-  --background: #fdfdfd;
+  --background: #f7f7f8;
   --foreground: #111111;
   --muted: #888888;
   --border: #e2e2e2;
   --accent: #000000;
-
-  /* Background pattern colors */
-  --grid-line: rgba(0, 0, 0, 0.08);
 }
 
 @theme inline {
@@ -21,43 +17,25 @@
   --font-sans: var(--font-inter);
 }
 
-/* Subtle Animated Background grid */
-body {
+/* ── Base ─────────────────────────────────────────────────────────── */
+html {
   background-color: var(--background);
+}
+
+body {
+  background: transparent;
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
   overflow: hidden;
-  /* Hide scrollbar to enforce one-screen design */
 }
 
-body::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: -10;
-  pointer-events: none;
-  background-image:
-    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
-  background-size: 40px 40px;
-  background-position: 0 0;
-  animation: backgroundMove 60s linear infinite;
+/* Content above canvas */
+main {
+  position: relative;
+  z-index: 1;
 }
 
-@keyframes backgroundMove {
-  0% {
-    background-position: 0 0;
-  }
-
-  100% {
-    background-position: 40px 40px;
-  }
-}
-
-/* Clean scrollbar for internal scrolling elements */
+/* ── Scrollbar ────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
@@ -76,13 +54,11 @@ body::before {
   background: #a3a3a3;
 }
 
-/* Base resets */
+/* ── Resets ────────────────────────────────────────────────────────── */
 * {
   box-shadow: none !important;
-  /* Force no shadows everywhere */
 }
 
-/* Drag & drop highlight - refined & minimal */
 .drop-zone-active {
   border-color: var(--accent) !important;
   background-color: #f7f7f7 !important;

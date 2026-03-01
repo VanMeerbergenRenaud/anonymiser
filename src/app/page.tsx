@@ -14,13 +14,13 @@ export default function Home() {
   return (
     // Force the whole app into a single screen height with flex centering.
     // The background is handled by globals.css
-    <main className="h-screen w-full flex flex-col items-center justify-center p-4 pb-0">
+    <main className="h-screen w-full flex flex-col items-center justify-center p-4">
 
       {/* Central Application Window */}
-      <div className="w-full max-w-2xl h-185 max-h-[85vh] bg-white flex flex-col rounded-2xl border border-border overflow-hidden relative shadow-sm">
+      <div className="w-full max-w-2xl min-h-180 max-h-[85vh] bg-white/95 backdrop-blur-2xl flex flex-col rounded-[32px] border border-black/[0.08] overflow-hidden relative shadow-[0_8px_30px_rgb(0,0,0,0.06)] ring-1 ring-black/[0.02]">
 
         {/* Header / Top Bar */}
-        <header className="px-8 py-6 border-b border-border flex items-center justify-between z-10 bg-white">
+        <header className="px-8 py-6 border-b border-black/[0.04] flex items-center justify-between z-10 bg-transparent">
           <div>
             <h1 className="text-xl font-medium tracking-tight text-foreground">
               Anonymiseur
@@ -31,12 +31,12 @@ export default function Home() {
           </div>
 
           {/* Minimalist Segmented Control for Tabs */}
-          <div className="flex bg-neutral-100/50 p-0.5 rounded-lg border border-border/50">
+          <div className="flex bg-neutral-100/60 p-1 rounded-xl border border-black/[0.04] shadow-inner">
             <button
               onClick={() => setActiveTab("files")}
               className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-300 cursor-pointer ${activeTab === "files"
-                ? "bg-white text-foreground border border-border/50"
-                : "text-muted hover:text-foreground border border-transparent"
+                ? "bg-white text-foreground shadow-sm ring-1 ring-black/5"
+                : "text-muted hover:text-foreground"
                 }`}
             >
               Fichiers
@@ -68,14 +68,6 @@ export default function Home() {
         </div>
 
       </div>
-
-      {/* Minimal Footer Footer */}
-      <footer className="mt-8 text-[11px] text-muted tracking-wide uppercase">
-        Réaliser par&nbsp;
-        <a href="https://renaud-vmb.com" title="Vers le site du créateur" className="underline" target="_blank">
-          Renaud Vmb
-        </a>
-      </footer>
     </main>
   );
 }
