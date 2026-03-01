@@ -14,10 +14,10 @@ export default function Home() {
   return (
     // Force the whole app into a single screen height with flex centering.
     // The background is handled by globals.css
-    <main className="h-screen w-full flex flex-col items-center justify-center p-4">
+    <main className="h-screen w-full flex flex-col items-center justify-center p-4 pb-0">
 
       {/* Central Application Window */}
-      <div className="w-full max-w-2xl h-[700px] max-h-[85vh] bg-white flex flex-col rounded-2xl border border-border overflow-hidden relative shadow-sm">
+      <div className="w-full max-w-2xl h-185 max-h-[85vh] bg-white flex flex-col rounded-2xl border border-border overflow-hidden relative shadow-sm">
 
         {/* Header / Top Bar */}
         <header className="px-8 py-6 border-b border-border flex items-center justify-between z-10 bg-white">

@@ -248,18 +248,18 @@ export default function FileTab() {
             {files.length > 0 && (
                 <div className="mt-6 flex-1 flex flex-col min-h-0">
                     <div className="flex items-center justify-between mb-3 shrink-0">
-                        <h3 className="text-xs font-medium text-muted uppercase tracking-wider">Fichiers ({files.length})</h3>
-                        <div className="flex items-center gap-2">
+                        <h3 className="pl-2 pt-3 text-xs font-medium text-muted uppercase tracking-wider">Fichiers ({files.length})</h3>
+                        <div className="flex items-center gap-2 pr-3">
                             <button
                                 onClick={clearFiles}
-                                className="px-3 py-1 text-xs font-medium bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
+                                className="px-3 py-2 text-[13px] font-medium bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
                             >
                                 Tout supprimer
                             </button>
                             {files.some((f) => f.status === "done") && (
                                 <button
                                     onClick={downloadAll}
-                                    className="px-3 py-1 text-xs font-medium bg-foreground text-background rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
+                                    className="px-3 py-2 text-[13px] font-medium bg-foreground text-background rounded-lg hover:bg-neutral-700 transition-colors cursor-pointer"
                                 >
                                     Tout télécharger
                                 </button>
@@ -304,7 +304,7 @@ export default function FileTab() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-2 ml-4">
+                                <div className="flex items-center gap-2.5 ml-5">
                                     {tf.status === "done" && tf.downloadUrl && (
                                         <a
                                             href={tf.downloadUrl}
