@@ -11,7 +11,6 @@ Entités détectées
 - PERSON / PER → [PERSONNE]
 - LOCATION / LOC → [LIEU]
 - ORGANIZATION / ORG → [SOCIÉTÉ]
-- DATE_TIME → [DATE]
 - EMAIL_ADDRESS → [EMAIL]
 - PHONE_NUMBER → [TÉLÉPHONE]
 - IBAN_CODE → [IBAN]
@@ -19,13 +18,20 @@ Entités détectées
 - FR_POSTAL_CODE → [CODE_POSTAL]
 - FR_DATE_NAISSANCE → [DATE_NAISSANCE]
 - FR_NUM_ROLE (n° de rôle /FA) → [ROLE]
+- FR_NOM_PROPRE (noms en capitales) → [Nom propre]
 - NRP → [NATIONALITÉ]
 - CREDIT_CARD → [CARTE_BANCAIRE]
 - IP_ADDRESS → [ADRESSE_IP]
 - URL → [URL]
+
+Entités conservées (non anonymisées)
+------------------------------------
+- DATE_TIME → conservé tel quel pour préserver la chronologie
 """
 
 from __future__ import annotations
+
+import re
 
 from presidio_analyzer import (
     AnalyzerEngine,
@@ -44,7 +50,6 @@ from presidio_anonymizer.entities import OperatorConfig
 ENTITY_LABELS: dict[str, str] = {
     "PERSON": "PERSONNE",
     "LOCATION": "LIEU",
-    "DATE_TIME": "DATE",
     "EMAIL_ADDRESS": "EMAIL",
     "PHONE_NUMBER": "TÉLÉPHONE",
     "IBAN_CODE": "IBAN",
@@ -57,7 +62,11 @@ ENTITY_LABELS: dict[str, str] = {
     "ORGANIZATION": "SOCIÉTÉ",
     "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
     "FR_NUM_ROLE": "ROLE",
+    "FR_NOM_PROPRE": "Nom propre",
 }
+
+# Entités détectées par l'analyseur mais conservées dans le texte final
+ENTITIES_TO_SKIP: set[str] = {"DATE_TIME"}
 
 
 def get_label(entity_type: str) -> str:
@@ -198,6 +207,7 @@ def _build_analyzer() -> AnalyzerEngine:
             ],
             supported_language="fr",
         ),
+
     ]
 
     # --- Registre -----------------------------------------------------------
@@ -226,6 +236,40 @@ anonymizer_engine: AnonymizerEngine = AnonymizerEngine()
 
 
 # ---------------------------------------------------------------------------
+# Post-traitement : remplacement des noms propres en capitales
+# ---------------------------------------------------------------------------
+
+_UPPERCASE_NAME_RE = re.compile(
+    r"\b[A-ZÀ-Ú]{2,}(?:\s+[A-ZÀ-Ú]{2,})+\b"
+)
+"""Regex capturant 2+ mots consécutifs entièrement en majuscules (min 2 car.)"""
+
+
+def override_uppercase_entities(text: str, results: list) -> list:
+    """Remplace le type d'entité des résultats dont le texte est en capitales.
+
+    Si le texte capturé par Presidio correspond à une séquence de mots
+    entièrement en majuscules (≥2 mots de ≥2 caractères), son
+    ``entity_type`` est forcé à ``FR_NOM_PROPRE`` afin d'obtenir le
+    label ``[Nom propre]`` plutôt qu'un label incorrect (ex : NATIONALITÉ).
+    """
+    for r in results:
+        matched = text[r.start : r.end]
+        if _UPPERCASE_NAME_RE.fullmatch(matched):
+            r.entity_type = "FR_NOM_PROPRE"
+    return results
+
+
+def replace_uppercase_names(text: str) -> str:
+    """Remplace les séquences de mots en majuscules par ``[Nom propre]``.
+
+    Appelée *après* l'anonymisation Presidio pour capturer les séquences
+    que Presidio n'a pas détectées du tout.
+    """
+    return _UPPERCASE_NAME_RE.sub("[Nom propre]", text)
+
+
+# ---------------------------------------------------------------------------
 # Fonction utilitaire d'anonymisation de texte brut
 # ---------------------------------------------------------------------------
 
@@ -234,6 +278,8 @@ def anonymize_text(text: str) -> str:
 
     Chaque entité détectée est remplacée par un label entre crochets,
     par exemple ``[PERSONNE]``, ``[LIEU]``, ``[DATE_NAISSANCE]``, etc.
+    Les noms propres en capitales (ex : « RENAUD TECH COMPANY ») sont
+    remplacés par ``[Nom propre]``.
 
     Parameters
     ----------
@@ -246,6 +292,10 @@ def anonymize_text(text: str) -> str:
         Texte anonymisé avec les labels de remplacement.
     """
     results = analyzer.analyze(text=text, language="fr")
+    # Filtrer les entités à conserver (ex : dates)
+    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+    # Reclasser les entités en capitales comme noms propres
+    results = override_uppercase_entities(text, results)
     operators = {
         entity_type: OperatorConfig(
             "replace", {"new_value": f"[{get_label(entity_type)}]"}
@@ -255,4 +305,5 @@ def anonymize_text(text: str) -> str:
     anonymized = anonymizer_engine.anonymize(
         text=text, analyzer_results=results, operators=operators,
     )
-    return anonymized.text
+    # Post-traitement : noms propres en capitales non détectés par Presidio
+    return replace_uppercase_names(anonymized.text)

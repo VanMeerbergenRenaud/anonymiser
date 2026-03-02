@@ -19,7 +19,10 @@ import io
 import fitz  # PyMuPDF
 from docx import Document
 
-from api.nlp_engine import analyzer, anonymizer_engine, get_label
+from api.nlp_engine import (
+    analyzer, anonymizer_engine, get_label, ENTITIES_TO_SKIP,
+    replace_uppercase_names, override_uppercase_entities, _UPPERCASE_NAME_RE,
+)
 from presidio_anonymizer.entities import OperatorConfig
 
 
@@ -27,8 +30,8 @@ from presidio_anonymizer.entities import OperatorConfig
 # Constantes
 # ---------------------------------------------------------------------------
 
-MAX_FILE_SIZE: int = int(4.5 * 1024 * 1024)
-"""Taille maximale d'un fichier uploadé (4.5 Mo)."""
+MAX_FILE_SIZE: int = int(10 * 1024 * 1024)
+"""Taille maximale d'un fichier uploadé (10 Mo)."""
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,8 @@ def _process_txt(content: bytes) -> bytes:
     """
     text = content.decode("utf-8", errors="replace")
     results = analyzer.analyze(text=text, language="fr")
+    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+    results = override_uppercase_entities(text, results)
     operators = {
         entity_type: OperatorConfig(
             "replace", {"new_value": f"[{get_label(entity_type)}]"}
@@ -59,7 +64,7 @@ def _process_txt(content: bytes) -> bytes:
     anonymized = anonymizer_engine.anonymize(
         text=text, analyzer_results=results, operators=operators,
     )
-    return anonymized.text.encode("utf-8")
+    return replace_uppercase_names(anonymized.text).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +101,8 @@ def _anonymize_paragraph(paragraph) -> None:
         return
 
     results = analyzer.analyze(text=full_text, language="fr")
+    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+    results = override_uppercase_entities(full_text, results)
     if not results:
         return
 
@@ -105,6 +112,9 @@ def _anonymize_paragraph(paragraph) -> None:
     for result in results:
         label = get_label(result.entity_type)
         new_text = new_text[: result.start] + f"[{label}]" + new_text[result.end :]
+
+    # Post-traitement : noms propres en capitales
+    new_text = replace_uppercase_names(new_text)
 
     # Remplacer les runs : tout le texte dans le premier, vider les suivants
     if paragraph.runs:
@@ -205,6 +215,8 @@ def _process_pdf(content: bytes) -> bytes:
             continue
 
         results = analyzer.analyze(text=text_page, language="fr")
+        results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+        results = override_uppercase_entities(text_page, results)
         if not results:
             continue
 
@@ -223,6 +235,19 @@ def _process_pdf(content: bytes) -> bytes:
                     fontsize=10
                 )
 
+        page.apply_redactions()
+
+        # Post-traitement : rédiger les noms propres en capitales restants
+        text_after = page.get_text("text")
+        for m in _UPPERCASE_NAME_RE.finditer(text_after):
+            for inst in page.search_for(m.group()):
+                page.add_redact_annot(
+                    inst,
+                    text="[Nom propre]",
+                    fill=(1, 1, 1),
+                    text_color=(0, 0, 0),
+                    fontsize=10,
+                )
         page.apply_redactions()
 
     buf = io.BytesIO()

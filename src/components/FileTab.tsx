@@ -21,8 +21,8 @@ interface TrackedFile {
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_FILES = 5;
-const MAX_FILE_SIZE = 4.5 * 1024 * 1024; // 4.5 Mo
+const MAX_FILES = 8;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ export default function FileTab() {
                         id: uid(),
                         file,
                         status: "error",
-                        error: "Fichier trop volumineux (max 4.5 Mo)",
+                        error: "Fichier trop volumineux (max 10 Mo)",
                     });
                     continue;
                 }
@@ -238,7 +238,7 @@ export default function FileTab() {
                             Déposez vos fichiers ici
                         </p>
                         <p className="text-muted text-xs">
-                            PDF, DOCX, TXT (max {MAX_FILES} fichiers, 4.5 Mo)
+                            PDF, DOCX, TXT (max {MAX_FILES} fichiers, 10 Mo)
                         </p>
                     </div>
                 </div>

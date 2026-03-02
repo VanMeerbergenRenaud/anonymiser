@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # Autorise les requêtes du frontend Next.js
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 Mo
+app.config["MAX_CONTENT_LENGTH"] = 11 * 1024 * 1024  # 11 Mo (marge pour multipart)
 
 
 # ---------------------------------------------------------------------------
