@@ -14,13 +14,13 @@ export default function Home() {
   return (
     // Force the whole app into a single screen height with flex centering.
     // The background is handled by globals.css
-    <main className="h-screen w-full flex flex-col items-center justify-center p-4">
+    <main className="h-screen w-full flex flex-col items-center justify-center my-4 px-4">
 
       {/* Central Application Window */}
       <div className="w-full max-w-2xl min-h-180 max-h-[85vh] bg-white/95 backdrop-blur-2xl flex flex-col rounded-[32px] border border-black/[0.08] overflow-hidden relative shadow-[0_8px_30px_rgb(0,0,0,0.06)] ring-1 ring-black/[0.02]">
 
         {/* Header / Top Bar */}
-        <header className="px-8 py-6 border-b border-black/[0.04] flex items-center justify-between z-10 bg-transparent">
+        <header className="px-8 py-6 border-b border-gray-100 flex items-center justify-between z-10 bg-transparent">
           <div>
             <h1 className="text-xl font-medium tracking-tight text-foreground">
               Anonymiseur
@@ -31,7 +31,7 @@ export default function Home() {
           </div>
 
           {/* Minimalist Segmented Control for Tabs */}
-          <div className="flex bg-neutral-100/60 p-1 rounded-xl border border-black/[0.04] shadow-inner">
+          <div className="flex bg-neutral-100/60 p-1 rounded-xl border border-gray-100 shadow-inner">
             <button
               onClick={() => setActiveTab("files")}
               className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all duration-300 cursor-pointer ${activeTab === "files"
