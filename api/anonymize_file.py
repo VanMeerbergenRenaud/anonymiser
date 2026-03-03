@@ -1,15 +1,15 @@
 """
-anonymize_file — Traitement et anonymisation de fichiers (TXT, DOCX, PDF).
+anonymize_file — Conversion et anonymisation de fichiers (TXT, DOCX, PDF).
 
-Ce module contient les fonctions de traitement spécifiques à chaque format
-de fichier. Il utilise le moteur NLP partagé de ``api.nlp_engine`` pour
-la détection et le remplacement des entités sensibles.
+Ce module convertit les fichiers DOCX et PDF en texte brut (UTF-8),
+puis anonymise le texte via le moteur NLP partagé de ``api.nlp_engine``.
+Le résultat est toujours un fichier ``.txt`` anonymisé.
 
-Formats supportés
------------------
-- **.txt** : remplacement textuel simple
-- **.docx** : remplacement dans les paragraphes et tableaux, suppression des images
-- **.pdf** : rédaction avec rectangles noirs par-dessus les entités, suppression des images
+Formats supportés en entrée
+---------------------------
+- **.txt** : anonymisation directe
+- **.docx** : extraction du texte → anonymisation
+- **.pdf** : extraction du texte → anonymisation
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from docx import Document
 
 from api.nlp_engine import (
     analyzer, anonymizer_engine, get_label, ENTITIES_TO_SKIP,
-    replace_uppercase_names, override_uppercase_entities, _UPPERCASE_NAME_RE,
+    replace_uppercase_names, override_uppercase_entities,
 )
 from presidio_anonymizer.entities import OperatorConfig
 
@@ -68,67 +68,14 @@ def _process_txt(content: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# DOCX
+# DOCX → TXT
 # ---------------------------------------------------------------------------
 
-def _remove_images_from_paragraph(paragraph) -> None:
-    """Supprime toutes les images inline d'un paragraphe Word.
+def _convert_docx_to_txt(content: bytes) -> bytes:
+    """Extrait le texte brut d'un fichier DOCX.
 
-    Gère à la fois les éléments ``<w:drawing>`` (images modernes) et
-    ``<w:pict>`` (images VML héritées).
-    """
-    nsmap = {
-        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
-        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-        "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
-        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-    }
-    for drawing in paragraph._element.findall(".//w:drawing", nsmap):
-        drawing.getparent().remove(drawing)
-    for pict in paragraph._element.findall(".//w:pict", nsmap):
-        pict.getparent().remove(pict)
-
-
-def _anonymize_paragraph(paragraph) -> None:
-    """Détecte et remplace les entités sensibles dans un paragraphe Word.
-
-    Le texte complet du paragraphe est analysé, puis les remplacements sont
-    effectués dans le premier *run* pour conserver le formatage de base.
-    """
-    full_text = paragraph.text
-    if not full_text.strip():
-        return
-
-    results = analyzer.analyze(text=full_text, language="fr")
-    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
-    results = override_uppercase_entities(full_text, results)
-    if not results:
-        return
-
-    # Trier de la fin vers le début pour préserver les indices
-    results = sorted(results, key=lambda r: r.start, reverse=True)
-    new_text = full_text
-    for result in results:
-        label = get_label(result.entity_type)
-        new_text = new_text[: result.start] + f"[{label}]" + new_text[result.end :]
-
-    # Post-traitement : noms propres en capitales
-    new_text = replace_uppercase_names(new_text)
-
-    # Remplacer les runs : tout le texte dans le premier, vider les suivants
-    if paragraph.runs:
-        paragraph.runs[0].text = new_text
-        for run in paragraph.runs[1:]:
-            run.text = ""
-
-
-def _process_docx(content: bytes) -> bytes:
-    """Anonymise un fichier DOCX en préservant la structure du document.
-
-    - Supprime les images des paragraphes et cellules de tableaux.
-    - Remplace les entités sensibles par des labels ``[TYPE]``.
-    - Conserve le formatage du premier *run* de chaque paragraphe.
+    Parcourt les paragraphes du corps principal ainsi que les cellules
+    de tableaux, et retourne le tout en texte UTF-8.
 
     Parameters
     ----------
@@ -138,51 +85,53 @@ def _process_docx(content: bytes) -> bytes:
     Returns
     -------
     bytes
-        Contenu du fichier DOCX anonymisé.
+        Texte brut encodé en UTF-8.
     """
     doc = Document(io.BytesIO(content))
+    lines: list[str] = []
 
     # Paragraphes principaux
     for paragraph in doc.paragraphs:
-        _remove_images_from_paragraph(paragraph)
-        _anonymize_paragraph(paragraph)
+        lines.append(paragraph.text)
 
     # Cellules de tableaux
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    _remove_images_from_paragraph(paragraph)
-                    _anonymize_paragraph(paragraph)
+                    text = paragraph.text.strip()
+                    if text:
+                        lines.append(text)
 
-    # Nettoyer les relations d'images orphelines
-    try:
-        part = doc.part
-        rels_to_remove = [
-            rel_id
-            for rel_id, rel in part.rels.items()
-            if "image" in rel.reltype
-        ]
-        for rel_id in rels_to_remove:
-            del part.rels[rel_id]
-    except Exception:
-        pass  # Les éléments XML ont déjà été supprimés
+    return "\n".join(lines).encode("utf-8")
 
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+
+def _process_docx(content: bytes) -> bytes:
+    """Convertit un DOCX en texte brut, puis anonymise.
+
+    Parameters
+    ----------
+    content : bytes
+        Contenu brut du fichier ``.docx``.
+
+    Returns
+    -------
+    bytes
+        Texte anonymisé encodé en UTF-8.
+    """
+    txt_bytes = _convert_docx_to_txt(content)
+    return _process_txt(txt_bytes)
 
 
 # ---------------------------------------------------------------------------
-# PDF
+# PDF → TXT
 # ---------------------------------------------------------------------------
 
-def _process_pdf(content: bytes) -> bytes:
-    """Anonymise un fichier PDF par rédaction (rectangles noirs).
+def _convert_pdf_to_txt(content: bytes) -> bytes:
+    """Extrait le texte brut d'un fichier PDF.
 
-    - Supprime toutes les images de chaque page.
-    - Détecte les entités sensibles et les couvre avec des annotations
-      de rédaction noires.
+    Parcourt chaque page et concatène le texte extrait,
+    séparé par des sauts de ligne.
 
     Parameters
     ----------
@@ -192,65 +141,32 @@ def _process_pdf(content: bytes) -> bytes:
     Returns
     -------
     bytes
-        Contenu du fichier PDF anonymisé.
+        Texte brut encodé en UTF-8.
     """
     doc = fitz.open(stream=content, filetype="pdf")
+    pages: list[str] = []
 
     for page in doc:
-        # Supprimer les images
-        for img in page.get_images(full=True):
-            xref = img[0]
-            try:
-                page.delete_image(xref)
-            except Exception:
-                # Fallback : couvrir l'image avec un rectangle blanc
-                for img_rect in page.get_image_rects(xref):
-                    page.draw_rect(img_rect, color=(1, 1, 1), fill=(1, 1, 1))
+        text = page.get_text("text")
+        if text.strip():
+            pages.append(text)
 
-        page.clean_contents()
-
-        # Analyser le texte de la page
-        text_page = page.get_text("text")
-        if not text_page.strip():
-            continue
-
-        results = analyzer.analyze(text=text_page, language="fr")
-        results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
-        results = override_uppercase_entities(text_page, results)
-        if not results:
-            continue
-
-        # Rédiger les entités sensibles (remplacer le texte)
-        for result in results:
-            label = get_label(result.entity_type)
-            sensitive_text = text_page[result.start : result.end]
-            for inst in page.search_for(sensitive_text):
-                # Ajoute une annotation qui supprimera le texte original
-                # et dessinera le [LABEL] dessus (fond blanc, texte noir)
-                page.add_redact_annot(
-                    inst, 
-                    text=f"[{label}]",
-                    fill=(1, 1, 1),
-                    text_color=(0, 0, 0),
-                    fontsize=10
-                )
-
-        page.apply_redactions()
-
-        # Post-traitement : rédiger les noms propres en capitales restants
-        text_after = page.get_text("text")
-        for m in _UPPERCASE_NAME_RE.finditer(text_after):
-            for inst in page.search_for(m.group()):
-                page.add_redact_annot(
-                    inst,
-                    text="[Nom propre]",
-                    fill=(1, 1, 1),
-                    text_color=(0, 0, 0),
-                    fontsize=10,
-                )
-        page.apply_redactions()
-
-    buf = io.BytesIO()
-    doc.save(buf, garbage=4, deflate=True)
     doc.close()
-    return buf.getvalue()
+    return "\n".join(pages).encode("utf-8")
+
+
+def _process_pdf(content: bytes) -> bytes:
+    """Convertit un PDF en texte brut, puis anonymise.
+
+    Parameters
+    ----------
+    content : bytes
+        Contenu brut du fichier ``.pdf``.
+
+    Returns
+    -------
+    bytes
+        Texte anonymisé encodé en UTF-8.
+    """
+    txt_bytes = _convert_pdf_to_txt(content)
+    return _process_txt(txt_bytes)

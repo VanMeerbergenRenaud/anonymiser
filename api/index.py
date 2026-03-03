@@ -78,14 +78,8 @@ def anonymize_text():
         return jsonify({"error": f"Erreur interne : {e}"}), 500
 
 
-# Correspondance extension → Content-Type pour les fichiers anonymisés
-_CONTENT_TYPES: dict[str, str] = {
-    ".txt": "text/plain; charset=utf-8",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pdf": "application/pdf",
-}
-
 # Correspondance extension → fonction de traitement
+# Tous les formats sont désormais convertis en texte et anonymisés.
 _PROCESSORS = {
     ".txt": file_module._process_txt,
     ".docx": file_module._process_docx,
@@ -98,7 +92,7 @@ def anonymize_file():
     """Anonymise un fichier uploadé via multipart/form-data.
 
     Attend un champ ``file`` contenant le document (PDF, DOCX ou TXT).
-    Retourne le fichier anonymisé en téléchargement direct.
+    Retourne toujours un fichier ``.txt`` anonymisé (UTF-8).
     """
     try:
         if "file" not in request.files:
@@ -114,7 +108,7 @@ def anonymize_file():
 
         # Vérification de la taille
         if len(file_data) > file_module.MAX_FILE_SIZE:
-            return jsonify({"error": "Le fichier est trop volumineux (max 4.5 Mo)."}), 413
+            return jsonify({"error": "Le fichier est trop volumineux (max 10 Mo)."}), 413
 
         # Vérification du format
         processor = _PROCESSORS.get(ext)
@@ -124,11 +118,14 @@ def anonymize_file():
             }), 400
 
         result_data = processor(file_data)
-        anon_filename = f"a-{filename}"
+
+        # Le fichier de sortie est toujours du .txt (UTF-8)
+        base_name = os.path.splitext(filename)[0]
+        anon_filename = f"a-{base_name}.txt"
 
         return Response(
             result_data,
-            mimetype=_CONTENT_TYPES[ext],
+            mimetype="text/plain; charset=utf-8",
             headers={
                 "Content-Disposition": f'attachment; filename="{anon_filename}"',
                 "X-Filename": anon_filename,
