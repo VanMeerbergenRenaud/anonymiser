@@ -22,3 +22,9 @@ transformers==4.41.2
 # Pont requis par Presidio pour activer le moteur NER « transformers »
 # (sans lui : ValueError "NLP engine 'transformers' is not available").
 spacy-huggingface-pipelines==0.0.4
+
+# Tokenizer SentencePiece de CamemBERT + protobuf pour la conversion
+# slow->fast (sans eux : "You need to have sentencepiece installed...").
+# protobuf épinglé en 4.x : la 5+/7+ casse la conversion avec transformers 4.41.
+sentencepiece==0.2.0
+protobuf==4.25.3
