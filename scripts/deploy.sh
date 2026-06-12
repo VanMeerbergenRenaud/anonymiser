@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
 #
-# Script de déploiement pour Laravel Forge (ou tout VPS).
-# À coller dans le champ « Deploy Script » du site Forge, ou à exécuter par SSH
-# depuis la racine du projet.
+# Script de déploiement pour Laravel Forge (déploiement « zero-downtime »).
+# À coller dans : Forge → Site → Deployments → Deploy Script.
+#
+# Forge récupère déjà le code et exécute ce script depuis le dossier de la
+# release courante (.../current). On NE fait donc PAS de `git pull` ici.
 #
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+# Racine du site (sibling de "current" et "releases") et venv stable :
+# le venv vit HORS des releases pour ne pas réinstaller torch à chaque déploiement.
+SITE="/home/forge/anonymiser.on-forge.com"
+VENV="${SITE}/venv"
 
-# Branche de production (celle configurée dans Forge).
-BRANCH="${DEPLOY_BRANCH:-dev}"
+cd "${SITE}/current"
 
-echo "→ Récupération du code (${BRANCH})"
-git pull origin "${BRANCH}"
-
-echo "→ Dépendances Python + CamemBERT (venv)"
-python3 -m venv venv 2>/dev/null || true
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements-prod.txt
-
-echo "→ Préchargement du modèle CamemBERT (téléchargé une seule fois)"
-PYTHONPATH=. ANON_NLP_BACKEND=transformers ./venv/bin/python -c "import api.nlp_engine"
-
-echo "→ Build du frontend Next.js"
+echo "→ Frontend Next.js"
 npm ci
 npm run build
 
-echo "→ Redémarrage des daemons"
-# Forge redémarre automatiquement ses daemons après le déploiement.
-# Sinon, décommente et adapte les noms :
-# sudo supervisorctl restart anonymiser-api anonymiser-web
+echo "→ Backend Python (venv stable + dépendances)"
+python3 -m venv "${VENV}" 2>/dev/null || true
+"${VENV}/bin/pip" install --upgrade pip
+"${VENV}/bin/pip" install -r requirements-prod.txt
+
+echo "→ Préchargement de CamemBERT (téléchargé une seule fois, caché dans ~/.cache)"
+PYTHONPATH="${SITE}/current" ANON_NLP_BACKEND=transformers \
+    "${VENV}/bin/python" -c "import api.nlp_engine"
+
+echo "→ Redémarrage du background process (adapter le nom si besoin)"
+sudo supervisorctl restart anonymiser-api:* 2>/dev/null || true
 
 echo "✓ Déploiement terminé"

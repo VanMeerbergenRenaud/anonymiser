@@ -104,11 +104,16 @@ Nginx (443)
 - Package manager : `npm` — Build command : `npm run build`
 
 **2. Backend Python (à ajouter après la création du site)**
-- Installer les dépendances : `pip install -r requirements-prod.txt`
-- Daemon Forge (Server → Daemons) :
-  - Command : `venv/bin/gunicorn -c gunicorn.conf.py api.index:app`
-  - Directory : le dossier du site — User : `forge`
+- Le déploiement (étape 4) crée un venv **stable** dans `…/venv` (hors releases)
+  et y installe `requirements-prod.txt` + précharge CamemBERT.
+- Daemon Forge (Site → **Processes** → New background process) :
+  - Name : `anonymiser-api`
+  - Command : `/home/forge/anonymiser.on-forge.com/venv/bin/gunicorn -c gunicorn.conf.py api.index:app`
+  - Working directory : `/home/forge/anonymiser.on-forge.com/current` (valeur par défaut)
+  - Processes : `1`
 - Variable d'env : `ANON_NLP_BACKEND=transformers` (ou laisser l'auto-détection).
+- ⚠️ Crée ce background process **après** un premier déploiement réussi (le venv
+  doit déjà exister).
 
 **3. Reverse-proxy** : copier le contenu de
 [`deploy/nginx-anonymiser.conf`](deploy/nginx-anonymiser.conf) dans la config
