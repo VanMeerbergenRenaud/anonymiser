@@ -78,6 +78,35 @@ def anonymize_text():
         return jsonify({"error": f"Erreur interne : {e}"}), 500
 
 
+@app.route("/api/analyze_text", methods=["POST"])
+def analyze_text_detailed():
+    """Analyse un texte et renvoie les détections structurées (pour révision).
+
+    Attend ``{"text": "...", "whitelist": [...], "blocklist": [...]}`` et
+    retourne ``{"text": "...", "detections": [...]}`` — le texte original
+    accompagné des entités détectées, à valider/refuser dans l'interface.
+    """
+    try:
+        data = request.get_json()
+        if not data or "text" not in data:
+            return jsonify({"error": "Le champ 'text' est vide."}), 400
+
+        text = data.get("text", "")
+        if not text.strip():
+            return jsonify({"error": "Le champ 'text' est vide."}), 400
+
+        whitelist = data.get("whitelist") or []
+        blocklist = data.get("blocklist") or []
+        result = text_module.analyze_text_detailed(text, whitelist, blocklist)
+        return jsonify(result)
+
+    except json.JSONDecodeError:
+        return jsonify({"error": "JSON invalide."}), 400
+    except Exception as e:
+        logger.error("Error in analyze-text: %s", e, exc_info=True)
+        return jsonify({"error": f"Erreur interne : {e}"}), 500
+
+
 # Correspondance extension → fonction de traitement
 # Tous les formats sont désormais convertis en texte et anonymisés.
 _PROCESSORS = {

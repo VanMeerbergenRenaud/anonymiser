@@ -81,6 +81,10 @@ ENTITY_LABELS: dict[str, str] = {
     "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
     "FR_NUM_ROLE": "ROLE",
     "FR_NOM_PROPRE": "Nom propre",
+    "FR_TVA": "TVA",
+    "FR_SIRET": "SIRET",
+    "FR_SIREN": "SIREN",
+    "CUSTOM": "CONFIDENTIEL",
 }
 
 # Entités détectées par l'analyseur mais conservées dans le texte final
@@ -302,6 +306,47 @@ def _build_analyzer() -> AnalyzerEngine:
         # validation Luhn) n'est chargé qu'en anglais par défaut ; on
         # l'enregistre explicitement pour le français.
         CreditCardRecognizer(supported_language="fr"),
+        # N° de TVA intracommunautaire français (FR + clé + 9 chiffres SIREN)
+        PatternRecognizer(
+            supported_entity="FR_TVA",
+            name="French VAT Recognizer",
+            patterns=[
+                Pattern(
+                    name="tva_pattern",
+                    regex=r"\bFR\s?[0-9A-HJ-NP-Z]{2}\s?\d{3}\s?\d{3}\s?\d{3}\b",
+                    score=0.8,
+                ),
+            ],
+            supported_language="fr",
+        ),
+        # SIRET (14 chiffres) — score modéré, exige un contexte d'immatriculation
+        PatternRecognizer(
+            supported_entity="FR_SIRET",
+            name="French SIRET Recognizer",
+            patterns=[
+                Pattern(
+                    name="siret_pattern",
+                    regex=r"\b\d{3}\s?\d{3}\s?\d{3}\s?\d{5}\b",
+                    score=0.4,
+                ),
+            ],
+            supported_language="fr",
+            context=["siret", "rcs", "immatricul", "établissement", "siège"],
+        ),
+        # SIREN (9 chiffres) — score faible, n'est masqué qu'avec contexte
+        PatternRecognizer(
+            supported_entity="FR_SIREN",
+            name="French SIREN Recognizer",
+            patterns=[
+                Pattern(
+                    name="siren_pattern",
+                    regex=r"\b\d{3}\s?\d{3}\s?\d{3}\b",
+                    score=0.35,
+                ),
+            ],
+            supported_language="fr",
+            context=["siren", "rcs", "immatricul", "société", "registre"],
+        ),
     ]
 
     # --- Registre -----------------------------------------------------------
@@ -459,3 +504,151 @@ def anonymize_text(text: str) -> str:
     )
     # Post-traitement : noms propres en capitales non détectés par Presidio
     return replace_uppercase_names(anonymized.text)
+
+
+# ---------------------------------------------------------------------------
+# Analyse détaillée (couche de révision interactive)
+# ---------------------------------------------------------------------------
+
+def _detection_dict(text: str, start: int, end: int, entity_type: str,
+                    score: float) -> dict:
+    """Construit un dictionnaire de détection sérialisable en JSON."""
+    return {
+        "start": start,
+        "end": end,
+        "type": entity_type,
+        "label": get_label(entity_type),
+        "score": round(float(score), 3),
+        "value": text[start:end],
+    }
+
+
+def _normalize(s: str) -> str:
+    """Normalise une chaîne pour comparaison (minuscule, espaces réduits)."""
+    return " ".join(s.lower().split())
+
+
+def _add_missing_uppercase_names(text: str, detections: list[dict]) -> list[dict]:
+    """Ajoute les séquences de noms en majuscules non détectées par Presidio.
+
+    Reproduit, sous forme de détections, ce que ``replace_uppercase_names``
+    masquerait, afin qu'elles soient visibles et révisables dans l'interface.
+    """
+    occupied = [(d["start"], d["end"]) for d in detections]
+    for m in _UPPERCASE_NAME_RE.finditer(text):
+        if _is_legal_header(m.group(0)):
+            continue
+        if any(m.start() < e and s < m.end() for s, e in occupied):
+            continue  # chevauche une détection existante
+        detections.append(
+            _detection_dict(text, m.start(), m.end(), "FR_NOM_PROPRE", 1.0)
+        )
+    return detections
+
+
+def _apply_whitelist(detections: list[dict], whitelist: list[str]) -> list[dict]:
+    """Retire les détections correspondant à un terme de la liste blanche.
+
+    Une détection est conservée (= non masquée, donc retirée des détections)
+    si sa valeur contient un terme de la liste blanche, ou inversement.
+    """
+    terms = [_normalize(w) for w in (whitelist or []) if w.strip()]
+    if not terms:
+        return detections
+    kept = []
+    for d in detections:
+        val = _normalize(d["value"])
+        if any(t in val or val in t for t in terms):
+            continue  # à garder en clair → on retire la détection
+        kept.append(d)
+    return kept
+
+
+def _add_blocklist(text: str, detections: list[dict],
+                   blocklist: list[str]) -> list[dict]:
+    """Force le masquage des occurrences des termes de la liste noire.
+
+    Chaque occurrence (insensible à la casse) d'un terme de la liste noire
+    devient une détection ``CUSTOM`` → ``[CONFIDENTIEL]``, sauf si elle
+    chevauche une détection existante.
+    """
+    terms = [t.strip() for t in (blocklist or []) if t.strip()]
+    if not terms:
+        return detections
+    occupied = [(d["start"], d["end"]) for d in detections]
+    for term in terms:
+        for m in re.finditer(re.escape(term), text, flags=re.IGNORECASE):
+            if any(m.start() < e and s < m.end() for s, e in occupied):
+                continue
+            det = _detection_dict(text, m.start(), m.end(), "CUSTOM", 1.0)
+            detections.append(det)
+            occupied.append((m.start(), m.end()))
+    return detections
+
+
+def _resolve_overlaps(detections: list[dict]) -> list[dict]:
+    """Trie les détections et retire les chevauchements (garde le meilleur score)."""
+    ordered = sorted(detections, key=lambda d: (d["start"], -d["score"]))
+    result: list[dict] = []
+    last_end = -1
+    for d in ordered:
+        if d["start"] >= last_end:
+            result.append(d)
+            last_end = d["end"]
+    return result
+
+
+def analyze_text_detailed(
+    text: str,
+    whitelist: list[str] | None = None,
+    blocklist: list[str] | None = None,
+) -> dict:
+    """Analyse un texte et renvoie les détections structurées (sans masquer).
+
+    Destinée à l'interface de révision : le frontend reçoit le texte original
+    et la liste des entités détectées, à valider ou refuser une par une.
+
+    Parameters
+    ----------
+    text : str
+        Texte brut en français à analyser.
+    whitelist : list[str], optional
+        Termes à toujours conserver en clair (retirés des détections).
+    blocklist : list[str], optional
+        Termes à toujours masquer (ajoutés comme ``[CONFIDENTIEL]``).
+
+    Returns
+    -------
+    dict
+        ``{"text": <original>, "detections": [{start, end, type, label,
+        score, value}, ...]}`` (détections triées, sans chevauchement).
+    """
+    results = analyzer.analyze(
+        text=text, language="fr", score_threshold=SCORE_THRESHOLD,
+    )
+    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+    results = filter_legal_headers(text, results)
+    results = override_uppercase_entities(text, results)
+
+    detections = [
+        _detection_dict(text, r.start, r.end, r.entity_type, r.score)
+        for r in results
+    ]
+    detections = _add_missing_uppercase_names(text, detections)
+    detections = _apply_whitelist(detections, whitelist)
+    detections = _add_blocklist(text, detections, blocklist)
+    detections = _resolve_overlaps(detections)
+
+    return {"text": text, "detections": detections}
+
+
+def apply_detections(text: str, detections: list[dict]) -> str:
+    """Reconstruit le texte en remplaçant chaque détection par son label.
+
+    Applique les remplacements de droite à gauche pour préserver les indices.
+    Utilisé côté serveur (tests, fichiers) ; le frontend de révision fait
+    le même calcul côté client pour l'interactivité.
+    """
+    for d in sorted(detections, key=lambda d: d["start"], reverse=True):
+        text = text[: d["start"]] + f'[{d["label"]}]' + text[d["end"]:]
+    return text
