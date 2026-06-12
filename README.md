@@ -87,6 +87,39 @@ Le seuil de confiance minimal d'anonymisation est réglable via `ANON_SCORE_THRE
 
 3. Ouvrez http://localhost:3000 dans votre navigateur.
 
+## Déploiement production (Laravel Forge / VPS)
+
+Sur un serveur dédié, il n'y a aucune limite de taille : le backend tourne avec
+**CamemBERT-NER** (précision maximale). L'architecture est un reverse-proxy
+Nginx devant deux processus :
+
+```
+Nginx (443)
+  ├── /api/*  →  Gunicorn + CamemBERT   (127.0.0.1:5328)
+  └── /       →  Next.js (next start)    (127.0.0.1:3000)
+```
+
+**1. Site Next.js (Forge → New Site, type Node.js)**
+- Branch : `dev` — Mode : **Node.js server** — Server port : `3000`
+- Package manager : `npm` — Build command : `npm run build`
+
+**2. Backend Python (à ajouter après la création du site)**
+- Installer les dépendances : `pip install -r requirements-prod.txt`
+- Daemon Forge (Server → Daemons) :
+  - Command : `venv/bin/gunicorn -c gunicorn.conf.py api.index:app`
+  - Directory : le dossier du site — User : `forge`
+- Variable d'env : `ANON_NLP_BACKEND=transformers` (ou laisser l'auto-détection).
+
+**3. Reverse-proxy** : copier le contenu de
+[`deploy/nginx-anonymiser.conf`](deploy/nginx-anonymiser.conf) dans la config
+Nginx du site (Forge → Site → Edit Files → Nginx Configuration).
+
+**4. Déploiement** : utiliser [`scripts/deploy.sh`](scripts/deploy.sh) comme
+script de déploiement Forge (build front + install Python + préchargement du
+modèle).
+
+> **RAM** : prévoir **≥ 2 Go** (torch + modèle CamemBERT ≈ 1 Go en mémoire).
+
 ## Confidentialité
 
 Toute l'analyse est effectuée **localement**. Aucune donnée sensible n'est enregistrée ni envoyée à un tiers.
