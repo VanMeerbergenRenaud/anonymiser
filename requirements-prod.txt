@@ -1,0 +1,13 @@
+# Dépendances de PRODUCTION (serveur dédié / VPS, ex. Laravel Forge).
+#
+# Reprend l'environnement local complet (CamemBERT-NER via torch +
+# transformers — aucune limite de taille sur un vrai serveur) et ajoute un
+# serveur WSGI de production (Gunicorn) à la place du serveur de dev Flask.
+#
+# Installation :
+#   pip install -r requirements-prod.txt
+
+-r requirements-local.txt
+
+# Serveur WSGI de production
+gunicorn==22.0.0

@@ -19,11 +19,7 @@ import io
 import fitz  # PyMuPDF
 from docx import Document
 
-from api.nlp_engine import (
-    analyzer, anonymizer_engine, get_label, ENTITIES_TO_SKIP,
-    replace_uppercase_names, override_uppercase_entities,
-)
-from presidio_anonymizer.entities import OperatorConfig
+from api.nlp_engine import anonymize_text
 
 
 # ---------------------------------------------------------------------------
@@ -52,19 +48,7 @@ def _process_txt(content: bytes) -> bytes:
         Contenu anonymisé encodé en UTF-8.
     """
     text = content.decode("utf-8", errors="replace")
-    results = analyzer.analyze(text=text, language="fr")
-    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
-    results = override_uppercase_entities(text, results)
-    operators = {
-        entity_type: OperatorConfig(
-            "replace", {"new_value": f"[{get_label(entity_type)}]"}
-        )
-        for entity_type in {r.entity_type for r in results}
-    }
-    anonymized = anonymizer_engine.anonymize(
-        text=text, analyzer_results=results, operators=operators,
-    )
-    return replace_uppercase_names(anonymized.text).encode("utf-8")
+    return anonymize_text(text).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
