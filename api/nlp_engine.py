@@ -27,10 +27,27 @@ Entités détectées
 Entités conservées (non anonymisées)
 ------------------------------------
 - DATE_TIME → conservé tel quel pour préserver la chronologie
+
+Moteur NER (backend)
+--------------------
+Le backend de reconnaissance d'entités est sélectionnable via la variable
+d'environnement ``ANON_NLP_BACKEND`` :
+
+- ``transformers`` → CamemBERT-NER (``Jean-Baptiste/camembert-ner``), plus
+  précis sur le français, recommandé en local. Nécessite ``torch`` +
+  ``transformers`` (voir ``requirements-local.txt``). Le modèle (~440 Mo) est
+  téléchargé une seule fois dans ``~/.cache/huggingface`` puis utilisé
+  hors-ligne.
+- ``spacy`` → modèle spaCy ``fr_core_news_md`` (léger, utilisé sur Vercel où
+  CamemBERT ne rentre pas dans une fonction serverless).
+
+Par défaut : ``spacy`` sur Vercel (variable ``VERCEL`` présente), sinon
+``transformers``.
 """
 
 from __future__ import annotations
 
+import os
 import re
 
 from presidio_analyzer import (
@@ -75,6 +92,90 @@ def get_label(entity_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sélection et configuration du backend NER
+# ---------------------------------------------------------------------------
+
+_SPACY_MODEL = "fr_core_news_md"
+"""Modèle spaCy utilisé (NER en backend spaCy, tokenisation en backend transformers)."""
+
+_TRANSFORMERS_MODEL = "Jean-Baptiste/camembert-ner"
+"""Modèle CamemBERT-NER HuggingFace utilisé en backend ``transformers``."""
+
+# Mapping labels NER (spaCy ET CamemBERT utilisent PER/LOC/ORG/MISC)
+_NER_ENTITY_MAPPING: dict[str, str] = {
+    "PER": "PERSON",
+    "PERSON": "PERSON",
+    "LOC": "LOCATION",
+    "LOCATION": "LOCATION",
+    "ORG": "ORGANIZATION",
+    "ORGANIZATION": "ORGANIZATION",
+    "MISC": "NRP",
+}
+
+
+def _transformers_available() -> bool:
+    """Vrai si ``torch`` et ``transformers`` sont installés (backend CamemBERT)."""
+    import importlib.util
+
+    return (
+        importlib.util.find_spec("torch") is not None
+        and importlib.util.find_spec("transformers") is not None
+    )
+
+
+def select_backend() -> str:
+    """Retourne le backend NER actif : ``"transformers"`` ou ``"spacy"``.
+
+    Piloté par ``ANON_NLP_BACKEND`` (``"spacy"`` ou ``"transformers"``). En
+    l'absence de valeur explicite, le choix est automatique :
+
+    - ``spacy`` sur Vercel (variable ``VERCEL`` présente, CamemBERT n'y rentre
+      pas) ;
+    - ``transformers`` (CamemBERT) ailleurs **si** ``torch`` + ``transformers``
+      sont installés, sinon repli sur ``spacy``.
+
+    Un choix explicite via ``ANON_NLP_BACKEND`` est toujours respecté.
+    """
+    backend = os.environ.get("ANON_NLP_BACKEND", "").strip().lower()
+    if backend in {"spacy", "transformers"}:
+        return backend
+    if os.environ.get("VERCEL"):
+        return "spacy"
+    return "transformers" if _transformers_available() else "spacy"
+
+
+def _nlp_configuration() -> dict:
+    """Construit la configuration ``NlpEngineProvider`` selon le backend actif."""
+    if select_backend() == "transformers":
+        return {
+            "nlp_engine_name": "transformers",
+            "models": [
+                {
+                    "lang_code": "fr",
+                    "model_name": {
+                        "spacy": _SPACY_MODEL,
+                        "transformers": _TRANSFORMERS_MODEL,
+                    },
+                }
+            ],
+            "ner_model_configuration": {
+                "labels_to_ignore": ["O"],
+                "aggregation_strategy": "simple",
+                "alignment_mode": "expand",
+                "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
+            },
+        }
+    return {
+        "nlp_engine_name": "spacy",
+        "models": [{"lang_code": "fr", "model_name": _SPACY_MODEL}],
+        "ner_model_configuration": {
+            "labels_to_ignore": ["O"],
+            "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Construction de l'AnalyzerEngine
 # ---------------------------------------------------------------------------
 
@@ -84,22 +185,11 @@ def _build_analyzer() -> AnalyzerEngine:
     Inclut les recognizers prédéfinis de Presidio **plus** des recognizers
     custom pour les entités françaises courantes (NIR, IBAN, téléphone,
     code postal, date de naissance, numéro de rôle, e-mail).
+
+    Le moteur NER (spaCy ou CamemBERT) est choisi par ``select_backend()``.
     """
-    # --- Moteur spaCy -------------------------------------------------------
-    configuration = {
-        "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "fr", "model_name": "fr_core_news_md"}],
-        "ner_model_configuration": {
-            "labels_to_ignore": ["O"],
-            "model_to_presidio_entity_mapping": {
-                "PER": "PERSON",
-                "LOC": "LOCATION",
-                "ORG": "ORGANIZATION",
-                "MISC": "NRP",
-            },
-        },
-    }
-    provider = NlpEngineProvider(nlp_configuration=configuration)
+    # --- Moteur NLP (spaCy ou Transformers/CamemBERT) -----------------------
+    provider = NlpEngineProvider(nlp_configuration=_nlp_configuration())
     nlp_engine = provider.create_engine()
 
     # --- Recognizers custom -------------------------------------------------
@@ -234,6 +324,13 @@ analyzer: AnalyzerEngine = _build_analyzer()
 anonymizer_engine: AnonymizerEngine = AnonymizerEngine()
 """Instance partagée du moteur d'anonymisation Presidio."""
 
+SCORE_THRESHOLD: float = float(os.environ.get("ANON_SCORE_THRESHOLD", "0.5"))
+"""Seuil de confiance minimal pour qu'une entité soit anonymisée.
+
+Évite la sur-anonymisation : les détections à faible score (ex : un nombre
+à 5 chiffres pris pour un code postal sans contexte d'adresse, score 0.4)
+sont ignorées sous ce seuil."""
+
 
 # ---------------------------------------------------------------------------
 # Post-traitement : remplacement des noms propres en capitales
@@ -244,6 +341,45 @@ _UPPERCASE_NAME_RE = re.compile(
 )
 """Regex capturant 2+ mots consécutifs entièrement en majuscules (min 2 car.)"""
 
+# Termes juridiques / structurels fréquemment écrits en capitales et qui ne
+# sont PAS des noms de personnes. Si une séquence en majuscules contient l'un
+# de ces mots, elle n'est pas remplacée par [Nom propre] (évite de masquer
+# « TRIBUNAL DE COMMERCE », « COUR D'APPEL », « PAR CES MOTIFS », etc.).
+_LEGAL_UPPERCASE_STOPWORDS: set[str] = {
+    "TRIBUNAL", "COUR", "APPEL", "CASSATION", "JUGEMENT", "ARRÊT", "ARRET",
+    "ORDONNANCE", "ARTICLE", "ARTICLES", "REQUÊTE", "REQUETE", "AUDIENCE",
+    "GREFFE", "CHAMBRE", "SECTION", "CONCLUSIONS", "INSTANCE", "GRANDE",
+    "JUDICIAIRE", "ADMINISTRATIF", "CONSEIL", "COMMERCE", "RÉPUBLIQUE",
+    "REPUBLIQUE", "FRANÇAISE", "FRANCAISE", "MINISTÈRE", "MINISTERE",
+    "PUBLIC", "PROCÈS", "PROCES", "VERBAL", "ATTENDU", "PAR", "CES",
+    "MOTIFS", "VU", "STATUANT", "CONTRADICTOIREMENT", "PRÉSENT", "PRESENT",
+}
+
+
+def _is_legal_header(matched: str) -> bool:
+    """Vrai si ``matched`` est un en-tête entièrement en majuscules contenant
+    un terme juridique/structurel (ex : « TRIBUNAL DE COMMERCE », « COUR D
+    APPEL »).
+
+    Ne renvoie ``True`` que si le texte ne contient **aucune minuscule** :
+    ainsi un vrai nom de personne (« Jean DUPONT ») reste masqué, tandis que
+    les intitulés de juridiction en capitales sont préservés.
+    """
+    if not matched or matched != matched.upper():
+        return False
+    if not any(ch.isalpha() for ch in matched):
+        return False
+    return any(tok in _LEGAL_UPPERCASE_STOPWORDS for tok in matched.split())
+
+
+def filter_legal_headers(text: str, results: list) -> list:
+    """Retire des résultats les en-têtes juridiques en majuscules.
+
+    Évite de masquer « TRIBUNAL DE COMMERCE DE PARIS » ou « COUR D APPEL »
+    même lorsque le moteur NER les détecte à tort comme PERSON / NRP.
+    """
+    return [r for r in results if not _is_legal_header(text[r.start : r.end])]
+
 
 def override_uppercase_entities(text: str, results: list) -> list:
     """Remplace le type d'entité des résultats dont le texte est en capitales.
@@ -252,10 +388,13 @@ def override_uppercase_entities(text: str, results: list) -> list:
     entièrement en majuscules (≥2 mots de ≥2 caractères), son
     ``entity_type`` est forcé à ``FR_NOM_PROPRE`` afin d'obtenir le
     label ``[Nom propre]`` plutôt qu'un label incorrect (ex : NATIONALITÉ).
+
+    Les séquences contenant un terme juridique/structurel (ex : « TRIBUNAL
+    DE COMMERCE ») sont laissées intactes pour éviter la sur-anonymisation.
     """
     for r in results:
         matched = text[r.start : r.end]
-        if _UPPERCASE_NAME_RE.fullmatch(matched):
+        if _UPPERCASE_NAME_RE.fullmatch(matched) and not _is_legal_header(matched):
             r.entity_type = "FR_NOM_PROPRE"
     return results
 
@@ -264,9 +403,14 @@ def replace_uppercase_names(text: str) -> str:
     """Remplace les séquences de mots en majuscules par ``[Nom propre]``.
 
     Appelée *après* l'anonymisation Presidio pour capturer les séquences
-    que Presidio n'a pas détectées du tout.
+    que Presidio n'a pas détectées du tout. Les intitulés juridiques en
+    capitales (ex : « COUR D'APPEL ») sont préservés.
     """
-    return _UPPERCASE_NAME_RE.sub("[Nom propre]", text)
+    def _sub(match: re.Match) -> str:
+        seq = match.group(0)
+        return seq if _is_legal_header(seq) else "[Nom propre]"
+
+    return _UPPERCASE_NAME_RE.sub(_sub, text)
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +435,13 @@ def anonymize_text(text: str) -> str:
     str
         Texte anonymisé avec les labels de remplacement.
     """
-    results = analyzer.analyze(text=text, language="fr")
+    results = analyzer.analyze(
+        text=text, language="fr", score_threshold=SCORE_THRESHOLD,
+    )
     # Filtrer les entités à conserver (ex : dates)
     results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
+    # Préserver les en-têtes juridiques en majuscules (TRIBUNAL, COUR, etc.)
+    results = filter_legal_headers(text, results)
     # Reclasser les entités en capitales comme noms propres
     results = override_uppercase_entities(text, results)
     operators = {

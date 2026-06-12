@@ -21,8 +21,21 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
 ## Architecture technique
 
 - **Frontend** : Next.js (App Router), React, Tailwind CSS
-- **Backend NLP** : Python, Flask, Presidio (Microsoft), spaCy (modèle `fr_core_news_md`)
+- **Backend NLP** : Python, Flask, Presidio (Microsoft) avec deux moteurs de reconnaissance d'entités au choix :
+  - **CamemBERT-NER** (`Jean-Baptiste/camembert-ner`, via `transformers`) — plus précis sur le français, recommandé en local.
+  - **spaCy** (`fr_core_news_md`) — léger, utilisé sur Vercel où CamemBERT ne rentre pas dans une fonction serverless.
 - **Manipulation de fichiers** : PyMuPDF (`fitz`) pour les PDF, `python-docx` pour Word
+
+### Choix du moteur (`ANON_NLP_BACKEND`)
+
+Le backend est piloté par la variable d'environnement `ANON_NLP_BACKEND` :
+
+| Valeur | Moteur | Usage |
+|---|---|---|
+| `transformers` | CamemBERT-NER | Local (défaut hors Vercel) |
+| `spacy` | spaCy `fr_core_news_md` | Vercel (défaut si la variable `VERCEL` est présente) |
+
+Le seuil de confiance minimal d'anonymisation est réglable via `ANON_SCORE_THRESHOLD` (défaut `0.5`) — l'augmenter réduit la sur-anonymisation.
 
 ## Prérequis
 
@@ -43,8 +56,19 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
    ```
 
 3. **Installer les dépendances backend :**
+
+   Pour utiliser le moteur **CamemBERT-NER** (recommandé en local) :
+   ```bash
+   pip install -r requirements-local.txt
+   ```
+   > Au premier lancement, le modèle `Jean-Baptiste/camembert-ner` (~440 Mo)
+   > est téléchargé une seule fois dans `~/.cache/huggingface`, puis utilisé
+   > **hors-ligne**. Aucune donnée n'est envoyée à un tiers à l'usage.
+
+   Pour utiliser uniquement le moteur **spaCy** (plus léger, sans `torch`) :
    ```bash
    pip install -r requirements.txt
+   export ANON_NLP_BACKEND=spacy
    ```
 
 ## Développement

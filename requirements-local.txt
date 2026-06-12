@@ -1,0 +1,20 @@
+# Dépendances pour l'exécution LOCALE avec le moteur CamemBERT-NER.
+#
+# Installe d'abord les dépendances de base (requirements.txt), puis torch (CPU)
+# et transformers. Ces deux paquets sont volontairement isolés ici car ils sont
+# trop lourds pour une fonction serverless Vercel (limite 250 Mo) — en
+# production, le backend bascule automatiquement sur spaCy.
+#
+# Le modèle « Jean-Baptiste/camembert-ner » (~440 Mo) est téléchargé une seule
+# fois au premier lancement dans ~/.cache/huggingface, puis utilisé hors-ligne.
+# Aucune donnée n'est envoyée à un tiers à l'usage.
+#
+# Installation :
+#   pip install -r requirements-local.txt
+
+-r requirements.txt
+
+# Roue CPU de PyTorch (évite de télécharger les paquets CUDA, bien plus lourds).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+transformers==4.41.2
