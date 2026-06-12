@@ -18,3 +18,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.2.2
 transformers==4.41.2
+
+# Pont requis par Presidio pour activer le moteur NER « transformers »
+# (sans lui : ValueError "NLP engine 'transformers' is not available").
+spacy-huggingface-pipelines==0.0.4
