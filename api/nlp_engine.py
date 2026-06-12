@@ -57,6 +57,7 @@ from presidio_analyzer import (
     RecognizerRegistry,
 )
 from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_analyzer.predefined_recognizers import CreditCardRecognizer
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
@@ -297,7 +298,10 @@ def _build_analyzer() -> AnalyzerEngine:
             ],
             supported_language="fr",
         ),
-
+        # Carte bancaire — le recognizer prédéfini de Presidio (avec
+        # validation Luhn) n'est chargé qu'en anglais par défaut ; on
+        # l'enregistre explicitement pour le français.
+        CreditCardRecognizer(supported_language="fr"),
     ]
 
     # --- Registre -----------------------------------------------------------
