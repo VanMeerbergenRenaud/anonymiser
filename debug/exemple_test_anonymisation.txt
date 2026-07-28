@@ -1,0 +1,30 @@
+TRIBUNAL DE COMMERCE DE PARIS
+COUR D'APPEL DE VERSAILLES — CHAMBRE CIVILE
+
+Affaire n° 2024/1234/FA — Audience du 15 mars 2024
+
+Entre les parties :
+
+Monsieur Jean DUPONT, de nationalité française, né le 12 mai 1981 à Lyon,
+demeurant 24 rue des Acacias, 69003 Lyon (code postal 69003), exerçant la
+profession d'ingénieur, ci-après le demandeur ;
+
+Et la société RENAUD TECH SOLUTIONS, immatriculée au registre du commerce,
+représentée par Madame Sophie MARTIN, ci-après la défenderesse.
+
+Coordonnées du demandeur : courriel jean.dupont@example.com, téléphone
+06 12 34 56 78, numéro de sécurité sociale 1 81 05 69 123 456 78.
+
+Le demandeur indique avoir réglé la somme de 45000 euros par virement sur
+le compte IBAN FR76 3000 4000 0500 0012 3456 789, ainsi qu'un acompte de
+2 500 € réglé par carte bancaire n° 4111 1111 1111 1111 le 3 février 2024.
+
+Les pièces ont été déposées via le portail https://greffe.tribunal-paris.fr
+depuis l'adresse IP 192.168.10.45.
+
+PAR CES MOTIFS, le Tribunal, statuant publiquement et contradictoirement,
+vu l'article 1240 du Code civil, condamne la défenderesse à verser au
+demandeur la somme principale de 45000 euros, outre les intérêts au taux
+légal à compter du 1er janvier 2024.
+
+Fait à Paris, le 15 mars 2024.

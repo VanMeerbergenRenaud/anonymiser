@@ -1,0 +1,30 @@
+# Dépendances pour l'exécution LOCALE avec le moteur CamemBERT-NER.
+#
+# Installe d'abord les dépendances de base (requirements.txt), puis torch (CPU)
+# et transformers. Ces deux paquets sont volontairement isolés ici car ils sont
+# trop lourds pour une fonction serverless Vercel (limite 250 Mo) — en
+# production, le backend bascule automatiquement sur spaCy.
+#
+# Le modèle « Jean-Baptiste/camembert-ner » (~440 Mo) est téléchargé une seule
+# fois au premier lancement dans ~/.cache/huggingface, puis utilisé hors-ligne.
+# Aucune donnée n'est envoyée à un tiers à l'usage.
+#
+# Installation :
+#   pip install -r requirements-local.txt
+
+-r requirements.txt
+
+# Roue CPU de PyTorch (évite de télécharger les paquets CUDA, bien plus lourds).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+transformers==4.41.2
+
+# Pont requis par Presidio pour activer le moteur NER « transformers »
+# (sans lui : ValueError "NLP engine 'transformers' is not available").
+spacy-huggingface-pipelines==0.0.4
+
+# Tokenizer SentencePiece de CamemBERT + protobuf pour la conversion
+# slow->fast (sans eux : "You need to have sentencepiece installed...").
+# protobuf épinglé en 4.x : la 5+/7+ casse la conversion avec transformers 4.41.
+sentencepiece==0.2.0
+protobuf==4.25.3
