@@ -24,8 +24,9 @@ preload_app = True
 workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
 threads = 2
 
-# L'inférence et les gros fichiers peuvent être lents : timeout large.
-timeout = 120
+# L'inférence et les gros fichiers (OCR de PDF scannés) peuvent être lents :
+# timeout large, cohérent avec proxy_read_timeout (deploy/nginx-anonymiser.conf).
+timeout = 300
 graceful_timeout = 30
 
 # Logs vers stdout/stderr (récupérés par le daemon Forge / supervisor).

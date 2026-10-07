@@ -23,6 +23,11 @@ python3 -m venv "$VENV" 2>/dev/null || true
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install -r "$FORGE_RELEASE_DIRECTORY/requirements-prod.txt"
 
+# OCR (texte des images) : Tesseract doit être installé une fois sur le serveur
+#   sudo apt-get install -y tesseract-ocr tesseract-ocr-fra tesseract-ocr-nld
+command -v tesseract >/dev/null 2>&1 \
+    || echo "⚠ Tesseract absent : sudo apt-get install -y tesseract-ocr tesseract-ocr-fra tesseract-ocr-nld"
+
 # Préchargement du modèle (téléchargé une seule fois)
 PYTHONPATH="$FORGE_RELEASE_DIRECTORY" ANON_NLP_BACKEND=transformers \
     "$VENV/bin/python" -c "import api.nlp_engine"

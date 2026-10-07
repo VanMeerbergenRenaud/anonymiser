@@ -8,7 +8,9 @@ comme serverless functions.
 Endpoints
 ---------
 - ``POST /api/anonymize_text`` : anonymise un texte brut (JSON ``{"text": "..."}``)
+- ``POST /api/analyze_text`` : renvoie les détections (révision interactive)
 - ``POST /api/anonymize_file`` : anonymise un fichier uploadé (multipart/form-data)
+- ``GET  /api/health`` : état du serveur (moteur NER, disponibilité de l'OCR)
 
 Usage
 -----
@@ -25,12 +27,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 
 import api.anonymize_text as text_module
 import api.anonymize_file as file_module
+from api import ocr
+from api.nlp_engine import select_backend
 
 # ---------------------------------------------------------------------------
 # Configuration du logging
@@ -107,21 +112,14 @@ def analyze_text_detailed():
         return jsonify({"error": f"Erreur interne : {e}"}), 500
 
 
-# Correspondance extension → fonction de traitement
-# Tous les formats sont désormais convertis en texte et anonymisés.
-_PROCESSORS = {
-    ".txt": file_module._process_txt,
-    ".docx": file_module._process_docx,
-    ".pdf": file_module._process_pdf,
-}
-
-
 @app.route("/api/anonymize_file", methods=["POST"])
 def anonymize_file():
     """Anonymise un fichier uploadé via multipart/form-data.
 
-    Attend un champ ``file`` contenant le document (PDF, DOCX ou TXT).
-    Retourne toujours un fichier ``.txt`` anonymisé (UTF-8).
+    Attend un champ ``file`` contenant le document (PDF, DOCX, TXT ou image).
+    Retourne toujours un fichier ``.txt`` anonymisé (UTF-8). Les en-têtes
+    ``X-Ocr-Images`` / ``X-Ocr-Skipped`` indiquent le nombre d'images lues
+    par OCR / non analysées.
     """
     try:
         if "file" not in request.files:
@@ -132,38 +130,50 @@ def anonymize_file():
             return jsonify({"error": "Aucun fichier valide reçu."}), 400
 
         filename = file.filename
-        ext = os.path.splitext(filename)[1].lower()
         file_data = file.read()
 
         # Vérification de la taille
         if len(file_data) > file_module.MAX_FILE_SIZE:
             return jsonify({"error": "Le fichier est trop volumineux (max 10 Mo)."}), 413
 
-        # Vérification du format
-        processor = _PROCESSORS.get(ext)
-        if processor is None:
-            return jsonify({
-                "error": f"Format non supporté : {ext}. Formats acceptés : .txt, .docx, .pdf"
-            }), 400
-
-        result_data = processor(file_data)
+        result = file_module.process_file(filename, file_data)
 
         # Le fichier de sortie est toujours du .txt (UTF-8)
         base_name = os.path.splitext(filename)[0]
         anon_filename = f"a-{base_name}.txt"
+        ascii_filename = anon_filename.encode("ascii", "replace").decode().replace("?", "_")
 
         return Response(
-            result_data,
+            result.content,
             mimetype="text/plain; charset=utf-8",
             headers={
-                "Content-Disposition": f'attachment; filename="{anon_filename}"',
-                "X-Filename": anon_filename,
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_filename}"; '
+                    f"filename*=UTF-8''{quote(anon_filename)}"
+                ),
+                "X-Filename": quote(anon_filename),
+                "X-Ocr-Images": str(result.ocr_images),
+                "X-Ocr-Skipped": str(result.skipped_images),
+                "Access-Control-Expose-Headers": "X-Filename, X-Ocr-Images, X-Ocr-Skipped",
             },
         )
 
+    except file_module.FileProcessingError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error("Error in anonymize-file: %s", e, exc_info=True)
         return jsonify({"error": f"Erreur lors du traitement du fichier : {e}"}), 500
+
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    """État du backend : moteur NER actif et disponibilité de l'OCR."""
+    return jsonify({
+        "status": "ok",
+        "nlp_backend": select_backend(),
+        "ocr": ocr.status(),
+        "formats": list(file_module.SUPPORTED_EXTENSIONS),
+    })
 
 
 # ---------------------------------------------------------------------------

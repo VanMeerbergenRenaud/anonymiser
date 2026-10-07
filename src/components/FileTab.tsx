@@ -15,6 +15,10 @@ interface TrackedFile {
     error?: string;
     downloadUrl?: string;
     downloadName?: string;
+    /** Nombre d'images dont le texte a été lu par OCR. */
+    ocrImages?: number;
+    /** Nombre d'images non analysées (OCR indisponible, format, limite). */
+    ocrSkipped?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -23,7 +27,8 @@ interface TrackedFile {
 
 const MAX_FILES = 8;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".jfif", ".tif", ".tiff", ".bmp", ".gif", ".webp"];
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ...IMAGE_EXTENSIONS];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,6 +38,23 @@ const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
 function getExtension(name: string): string {
     const idx = name.lastIndexOf(".");
     return idx !== -1 ? name.slice(idx).toLowerCase() : "";
+}
+
+/** Lit un en-tête numérique de la réponse (0 si absent). */
+function headerCount(res: Response, name: string): number {
+    const value = Number.parseInt(res.headers.get(name) ?? "", 10);
+    return Number.isFinite(value) ? value : 0;
+}
+
+/** Nom du fichier anonymisé, transmis encodé (accents) par le serveur. */
+function downloadFilename(res: Response, original: string): string {
+    const raw = res.headers.get("X-Filename");
+    if (!raw) return "a-" + original.replace(/\.[^.]+$/, "") + ".txt";
+    try {
+        return decodeURIComponent(raw);
+    } catch {
+        return raw;
+    }
 }
 
 /** Génère un identifiant court aléatoire. */
@@ -46,7 +68,8 @@ function uid(): string {
 
 /**
  * Onglet "Fichiers" : zone de drag-and-drop pour uploader des fichiers
- * (PDF, DOCX, TXT) et les anonymiser automatiquement.
+ * (PDF, DOCX, TXT, images) et les anonymiser automatiquement. Le texte
+ * contenu dans les images est lu par OCR côté serveur.
  */
 export default function FileTab() {
     const [files, setFiles] = useState<TrackedFile[]>([]);
@@ -86,13 +109,22 @@ export default function FileTab() {
             }
 
             const blob = await res.blob();
-            const filename = res.headers.get("X-Filename") || "a-" + tracked.file.name;
+            const filename = downloadFilename(res, tracked.file.name);
             const url = URL.createObjectURL(blob);
+            const ocrImages = headerCount(res, "X-Ocr-Images");
+            const ocrSkipped = headerCount(res, "X-Ocr-Skipped");
 
             setFiles((prev) =>
                 prev.map((f) =>
                     f.id === tracked.id
-                        ? { ...f, status: "done" as FileStatus, downloadUrl: url, downloadName: filename }
+                        ? {
+                            ...f,
+                            status: "done" as FileStatus,
+                            downloadUrl: url,
+                            downloadName: filename,
+                            ocrImages,
+                            ocrSkipped,
+                        }
                         : f
                 )
             );
@@ -220,7 +252,7 @@ export default function FileTab() {
                 <input
                     ref={inputRef}
                     type="file"
-                    accept=".pdf,.docx,.txt"
+                    accept={ACCEPTED_EXTENSIONS.join(",")}
                     multiple
                     onChange={handleFileInput}
                     className="hidden"
@@ -238,7 +270,10 @@ export default function FileTab() {
                             Déposez vos fichiers ici
                         </p>
                         <p className="text-muted text-xs">
-                            PDF, DOCX, TXT (max {MAX_FILES} fichiers, 10 Mo)
+                            PDF, DOCX, TXT, images (max {MAX_FILES} fichiers, 10 Mo)
+                        </p>
+                        <p className="text-muted text-[11px] mt-1">
+                            Le texte présent dans les images est lu automatiquement (OCR)
                         </p>
                     </div>
                 </div>
@@ -300,6 +335,24 @@ export default function FileTab() {
                                         <span className="truncate font-medium text-foreground text-[13px]">{tf.file.name}</span>
                                         <span className="text-muted text-[11px]">
                                             {Math.max(1, Math.ceil(tf.file.size / 1024))} Ko
+                                            {!!tf.ocrImages && (
+                                                <span
+                                                    className="text-amber-600"
+                                                    title="Texte extrait d'images par OCR : relisez les passages signalés dans le fichier"
+                                                >
+                                                    {" · "}
+                                                    {tf.ocrImages} image{tf.ocrImages > 1 ? "s" : ""} lue{tf.ocrImages > 1 ? "s" : ""} par OCR (à vérifier)
+                                                </span>
+                                            )}
+                                            {!!tf.ocrSkipped && (
+                                                <span
+                                                    className="text-red-500"
+                                                    title="Certaines images n'ont pas pu être analysées (voir le fichier)"
+                                                >
+                                                    {" · "}
+                                                    {tf.ocrSkipped} image{tf.ocrSkipped > 1 ? "s" : ""} non analysée{tf.ocrSkipped > 1 ? "s" : ""}
+                                                </span>
+                                            )}
                                         </span>
                                     </div>
                                 </div>
