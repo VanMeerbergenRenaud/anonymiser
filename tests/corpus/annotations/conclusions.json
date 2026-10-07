@@ -1,0 +1,41 @@
+{
+  "document": "conclusions.docx",
+  "description": "Conclusions de synthèse fictives (Word) : en-tête de cabinet portant le nom de l'avocate, numérotation automatique, puces, tableau des pièces, jurisprudence citée, initiales d'un témoin.",
+  "mask": {
+    "PERSONNE": [
+      "Leclercq", "LECLERCQ", "Isabelle", "Véronique", "HENROTTE", "Patrick", "GILSON",
+      "Marc-Antoine", "DE WOLF", "Chloé", "F.M."
+    ],
+    "ADRESSE": ["Toison d'Or", "Saint-Gilles 120", "Avroy"],
+    "LIEU_RÉSIDENCE": ["re:chez sa mère à Liège"],
+    "TÉLÉPHONE": ["02/538.12.34"],
+    "EMAIL": ["i.leclercq@leclercq-avocats.be"],
+    "REGISTRE_NATIONAL": ["75.06.14-002.31"],
+    "DATE_NAISSANCE": ["14/06/1975", "12 mai 2010"],
+    "NUMÉRO_RÔLE": ["2023/AR/1452"],
+    "IBAN": ["BE68 5390 0754 7034"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "COUR D'APPEL DE LIÈGE", "Chambre de la famille", "SA Ethias", "CPAS de Liège", "SPF Finances",
+    "Cass., 18 octobre 2019, C.18.0453.F", "C. const., 12 mai 2016, n° 70/2016",
+    "Marckx c. Belgique", "J.T., 2017, p. 345", "Cour européenne des droits de l'homme",
+    "3 juillet 2023", "PAR CES MOTIFS", "Cabinet"
+  ],
+  "same_label": [
+    ["Isabelle LECLERCQ", "Me {I. Leclercq}"],
+    ["Patrick GILSON", "Monsieur {GILSON}"],
+    ["Véronique HENROTTE", "Madame {HENROTTE}"]
+  ],
+  "distinct_labels": [
+    ["Patrick GILSON", "Chloé GILSON"],
+    ["Isabelle LECLERCQ", "Marc-Antoine DE WOLF", "Véronique HENROTTE", "F.M."]
+  ],
+  "present": [
+    "re:\\n1\\. Les parties ont vécu ensemble",
+    "re:\\n2\\. Depuis la séparation",
+    "re:\\n3\\. Le premier juge",
+    "re:\\n• les frais scolaires",
+    "re:\\n• les frais médicaux"
+  ]
+}

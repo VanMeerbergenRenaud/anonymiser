@@ -1,0 +1,24 @@
+{
+  "document": "bail.txt",
+  "description": "Bail de résidence principale fictif (texte brut) : adresse néerlandophone, téléphones belges et français, signatures en colonnes.",
+  "mask": {
+    "PERSONNE": ["Nathalie", "VANDENBERGHE", "Vandenberghe", "Julien", "MARTIN", "Martin", "Laura", "PETIT", "Petit"],
+    "ADRESSE": ["Kerkstraat 12 bus 3", "9000 Gent", "Avenue Louise 54", "1050 Ixelles"],
+    "TÉLÉPHONE": ["09 223 45 67", "0476 98 76 54", "+33 6 12 34 56 78"],
+    "EMAIL": ["nathalie.vdb@exemple.be"],
+    "IBAN": ["BE68 5390 0754 7034"],
+    "DATE_NAISSANCE": ["4 mars 1994", "22 novembre 1995"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "décret wallon du 15 mars 2018", "Belfius", "Fait à Bruxelles, le 1er septembre 2023",
+    "Article 1", "950 euros", "CONTRAT DE BAIL DE RÉSIDENCE PRINCIPALE"
+  ],
+  "same_label": [
+    ["Nathalie VANDENBERGHE", "Madame {VANDENBERGHE}", "N. Vandenberghe"],
+    ["Julien MARTIN", "Monsieur {MARTIN}", "J. Martin"],
+    ["Laura PETIT", "L. Petit"]
+  ],
+  "distinct_labels": [["Nathalie VANDENBERGHE", "Julien MARTIN", "Laura PETIT"]],
+  "present": ["re:Le bailleur,\\s{2,}Les preneurs,"]
+}

@@ -1,0 +1,26 @@
+{
+  "document": "acte_notarie.docx",
+  "description": "Acte notarié de vente fictif (Word) : comparants numérotés automatiquement, numéros nationaux, lieux de naissance, adresse du bien.",
+  "mask": {
+    "PERSONNE": [
+      "Anne-Catherine", "DEVILLERS", "Pierre", "DELVAUX", "Martine", "GOOSSENS", "Jacques",
+      "MOREAU", "Benoît", "NIZET"
+    ],
+    "REGISTRE_NATIONAL": ["58.12.02-131.44", "61.04.19-142.15", "90.01.08-077.28"],
+    "DATE_NAISSANCE": ["2 décembre 1958", "19 avril 1961", "8 janvier 1990"],
+    "LIEU_NAISSANCE": ["Uccle", "Ixelles", "re:né à Namur"],
+    "ADRESSE": ["rue de Dave 112", "5100 Jambes", "Saint-Nicolas 9", "re:5000 Namur"],
+    "TÉLÉPHONE": ["+32 471 23 45 67"],
+    "IBAN": ["BE06 7512 3456 7890"],
+    "RÉFÉRENCE_DOSSIER": ["2024/3567"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "notaire à la résidence de Namur", "Fait et passé à Namur", "285.000 euros", "banque ING",
+    "séparation de biens", "3 mai 1985", "Le quinze mars", "Rép. n°"
+  ],
+  "distinct_labels": [
+    ["Pierre DELVAUX", "Martine GOOSSENS", "Jacques MOREAU", "Benoît NIZET", "Anne-Catherine DEVILLERS"]
+  ],
+  "present": ["re:\\n1\\. Monsieur Pierre DELVAUX", "re:\\n2\\. Monsieur Benoît NIZET"]
+}

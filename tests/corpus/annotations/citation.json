@@ -1,0 +1,24 @@
+{
+  "document": "citation.pdf",
+  "description": "Citation fictive à comparaître devant la justice de paix (exploit d'huissier).",
+  "mask": {
+    "PERSONNE": ["Olivier", "PIRSON", "Christophe", "LAMBERT", "Kevin", "RENARD"],
+    "ADRESSE": ["Grandgagnage", "Godefroid", "Louvain 245", "5004 Bouge", "rue de Fer 18", "re:5000 Namur"],
+    "LIEU_NAISSANCE": ["Charleroi"],
+    "DATE_NAISSANCE": ["30 juillet 1985"],
+    "REGISTRE_NATIONAL": ["85.07.30-033.28"],
+    "PLAQUE": ["1-ABC-123"],
+    "IBAN": ["BE31 3630 1234 5678"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "SRL Immo-Mosane", "Justice de paix du canton de Namur 1", "Banque-Carrefour des Entreprises",
+    "mardi 21 mai 2024", "3.450 euros", "novembre 2023", "CITATION À COMPARAÎTRE"
+  ],
+  "same_label": [
+    ["Christophe LAMBERT", "C. LAMBERT"],
+    ["Kevin RENARD", "Monsieur {RENARD} a cessé"]
+  ],
+  "distinct_labels": [["Olivier PIRSON", "Christophe LAMBERT", "Kevin RENARD"]],
+  "present": ["re:\\nÀ LA REQUÊTE DE :\\n", "re:\\nAVONS CITÉ :\\n"]
+}

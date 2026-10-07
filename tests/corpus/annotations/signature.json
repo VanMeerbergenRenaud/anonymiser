@@ -1,0 +1,7 @@
+{
+  "document": "signature.png",
+  "needs_ocr": true,
+  "description": "Signature manuscrite fictive sans texte : l'OCR ne doit rien inventer.",
+  "present": ["--- Aucun texte détecté dans l'image ---"],
+  "absent": ["re:Texte extrait d'une image"]
+}

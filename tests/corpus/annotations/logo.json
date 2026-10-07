@@ -1,0 +1,7 @@
+{
+  "document": "logo.png",
+  "needs_ocr": true,
+  "description": "Blason fictif sans aucun texte : l'OCR ne doit rien inventer.",
+  "present": ["--- Aucun texte détecté dans l'image ---"],
+  "absent": ["re:Texte extrait d'une image"]
+}
