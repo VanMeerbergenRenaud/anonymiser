@@ -175,8 +175,8 @@
     "re:\\nA\\.1\\.\\s+Par son arrêt interlocutoire",
     "re:\\(ci-après : la directive 2011/16/UE\\)",
     "re:du Code des droits et taxes divers, à l’avocat-intermédiaire de notifier",
-    "re:Le greffier,[\\t ]{2,}Le président,|Le greffier,\\n+Le président,",
-    "re:N\\. Dupont[\\t ]{2,}P\\. Nihoul|N\\. Dupont\\n+P\\. Nihoul"
+    "re:Le greffier,(?:\\t+| {2,})Le président,|Le greffier,\\n+Le président,",
+    "re:N\\. Dupont(?:\\t+| {2,})P\\. Nihoul|N\\. Dupont\\n+P\\. Nihoul"
   ],
   "absent": [
     "avocatintermédiaire",

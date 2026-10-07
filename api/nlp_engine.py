@@ -350,6 +350,19 @@ analyzer: AnalyzerEngine = _build_analyzer()
 """Instance partagée de l'analyseur Presidio."""
 
 
+def known_word(word: str) -> bool:
+    """Vrai si ``word`` figure dans le lexique du modèle spaCy (500 000 formes).
+
+    Sert à trancher les traits d'union de fin de ligne des PDF : « conven- »
+    + « tionnelles » (césure) contre « avocat- » + « intermédiaire » (mot
+    composé). La recherche ne modifie pas le vocabulaire du modèle.
+    """
+    from spacy.strings import hash_string
+
+    nlp = getattr(analyzer.nlp_engine, "nlp", {}).get("fr")
+    return nlp is not None and hash_string(word.lower()) in nlp.vocab.vectors
+
+
 # ---------------------------------------------------------------------------
 # Structures
 # ---------------------------------------------------------------------------
