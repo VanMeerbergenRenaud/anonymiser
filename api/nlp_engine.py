@@ -869,8 +869,50 @@ def _detach_identifiers(text: str, detections: list[Detection]) -> list[Detectio
 
 
 # ---------------------------------------------------------------------------
-# Étape 4 : compléments (noms en capitales, propagation)
+# Étape 4 : compléments (identifiants répétés, noms en capitales, propagation)
 # ---------------------------------------------------------------------------
+
+_PROPAGATED_IDENTIFIERS: frozenset[str] = frozenset({
+    "FR_NUM_ROLE", "CASE_REFERENCE", "BE_NATIONAL_NUMBER", "FR_NIR", "BE_ID_CARD",
+    "PASSPORT", "IBAN_CODE", "BANK_ACCOUNT", "PHONE_NUMBER", "EMAIL_ADDRESS",
+    "LICENSE_PLATE", "VAT_NUMBER", "BE_ENTERPRISE",
+})
+"""Identifiants masqués partout dès qu'ils ont été reconnus une fois."""
+
+_ID_LIST_SPLIT_RE = re.compile(r"[ \t]*(?:[,;&]|(?<![\w])(?:et|en|à)(?![\w]))[ \t]*")
+
+
+def _propagate_identifiers(text: str, detections: list[Detection]) -> list[Detection]:
+    """Masque les autres occurrences d'un identifiant reconnu par une règle.
+
+    Un numéro de rôle annoncé une fois (« Numéros du rôle : 7407, 7409 ») est
+    ensuite cité seul (« l'affaire 7407 ») ; un numéro national annoncé par
+    « NN » réapparaît sans mention. Seules les valeurs d'au moins quatre
+    caractères alphanumériques comportant un chiffre sont reprises, comme
+    mot entier (« 7407 » ne masque pas « 17407 » ni « 7407/2 »).
+    """
+    values: dict[str, str] = {}
+    for d in detections:
+        if d.from_ner or d.entity not in _PROPAGATED_IDENTIFIERS:
+            continue
+        raw = text[d.start:d.end]
+        parts = _ID_LIST_SPLIT_RE.split(raw) if d.entity == "FR_NUM_ROLE" else [raw]
+        for part in parts:
+            part = part.strip()
+            if sum(ch.isalnum() for ch in part) >= 4 and any(ch.isdigit() for ch in part):
+                values.setdefault(part, d.entity)
+    if not values:
+        return detections
+    alternation = "|".join(re.escape(v) for v in sorted(values, key=lambda v: (-len(v), v)))
+    pattern = re.compile(rf"(?<![\w/.@-])(?:{alternation})(?![\w/@-]|[.,]\d)")
+    occupied = _SpanIndex((d.start, d.end) for d in detections)
+    added = [
+        Detection(m.start(), m.end(), values[m.group(0)], 0.9)
+        for m in pattern.finditer(text)
+        if not occupied.overlaps(m.start(), m.end())
+    ]
+    return detections + added
+
 
 def _add_uppercase_names(text: str, detections: list[Detection]) -> list[Detection]:
     """Ajoute les séquences en capitales (hors intitulés) non encore détectées."""
@@ -1174,6 +1216,7 @@ def detect_entities(
     detections = _trim_protected(analysis_text, detections, protected)
     detections = _clean(analysis_text, detections)
     detections = _detach_identifiers(analysis_text, detections)
+    detections = _propagate_identifiers(analysis_text, detections)
     detections = _add_uppercase_names(analysis_text, detections)
     detections = _propagate_persons(analysis_text, detections)
     detections = _trim_protected(analysis_text, detections, protected)

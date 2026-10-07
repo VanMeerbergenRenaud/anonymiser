@@ -219,3 +219,38 @@ def test_phone_field_keeps_only_the_number():
     phones = found(text, "PHONE_NUMBER")
     assert "0475/12.34.56" in phones and "081/22.33.45" in phones
     assert all("fax" not in p for p in phones)
+
+
+# ---------------------------------------------------------------------------
+# Numéros de rôle : pluriel, listes de nombres, « du rôle » après, « affaire n° »
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, expected", [
+    ("Numéros du rôle : 7407, 7409, 7410 et 7412", "7407, 7409, 7410 et 7412"),
+    ("Numéro du rôle : 7407", "7407"),
+    ("n°s du rôle 2023/123 et 2023/456", "2023/123 et 2023/456"),
+    ("Ces affaires, inscrites sous les numéros 7407, 7409, 7410 et 7412 du rôle de la Cour",
+     "7407, 7409, 7410 et 7412"),
+    ("L'affaire inscrite sous le numéro 7407 du rôle", "7407"),
+    ("inscrite au rôle général sous le n° 24/1234/A", "24/1234/A"),
+    ("les parties requérantes dans l’affaire n° 7407;", "7407"),
+    ("dans les affaires nos 7409 et 7410", "7409 et 7410"),
+    ("rolnummers 7407 en 7409", "7407 en 7409"),
+])
+def test_role_number_lists_and_mentions(text, expected):
+    assert expected in found(text, "FR_NUM_ROLE")
+
+
+@pytest.mark.parametrize("text", [
+    "dans l'affaire C-694/20, la Cour de justice",       # n° d'affaire de la CJUE : public
+    "dans l'affaire n° C-694/20",
+    "Par l’arrêt n° 103/2022 du 15 septembre 2022",     # n° d'arrêt public
+    "le rôle de l'avocat est essentiel",
+    "numéros de téléphone 0475 12 34 56",
+])
+def test_no_false_role_number_in_public_references(text):
+    assert found(text, "FR_NUM_ROLE", min_score=0.3) == []
+
+
+def test_role_list_does_not_swallow_small_numbers():
+    assert found("Numéros du rôle : 7407 et 2 autres affaires", "FR_NUM_ROLE") == ["7407"]

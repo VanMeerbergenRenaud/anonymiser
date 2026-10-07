@@ -282,3 +282,24 @@ def test_jurisdiction_seat_detection(before, expected):
     from api.nlp_engine import _is_jurisdiction_seat
 
     assert _is_jurisdiction_seat(before + "Liège", len(before)) is expected
+
+
+def test_role_numbers_are_masked_wherever_they_reappear():
+    result = anonymize_text(
+        "Numéros du rôle : 7407, 7409, 7410 et 7412\n"
+        "Ces affaires, inscrites sous les numéros 7407, 7409, 7410 et 7412 du rôle de la Cour, "
+        "ont été jointes. Les parties requérantes dans l’affaire n° 7407 et la partie requérante "
+        "dans l'affaire 7409 ont déposé un mémoire. Arrêt n° 103/2022."
+    )
+    for number in ("7407", "7409", "7410", "7412"):
+        assert number not in result, number
+    assert "du rôle : [NUMÉRO_RÔLE]" in result
+    assert "Arrêt n° 103/2022" in result
+
+
+def test_identifiers_are_masked_wherever_they_reappear():
+    result = anonymize_text(
+        "Monsieur Paul HENRY, NN 85.07.30-033.28. Le numéro 85.07.30-033.28 figure aussi "
+        "sur la pièce 3."
+    )
+    assert "85.07.30-033.28" not in result

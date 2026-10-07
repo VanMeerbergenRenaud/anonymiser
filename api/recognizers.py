@@ -505,21 +505,45 @@ _REF_GLUE = (
 )
 """Entre la mention et le numéro : « R.G. n° », « RG : », « RG n°s »…"""
 
+_PLAIN_ROLE = r"\d{3,6}(?![\w/]|[.,]\d)"
+"""Numéro de rôle sans séparateur (« 7407 ») : admis dans une liste annoncée
+par « numéros du rôle » ; au moins 3 chiffres (« et 2 autres » n'en est pas)."""
+
+_ROLE_LIST = (
+    rf"{_REF}(?:[ \t]*(?:[,;&–—-]|et|à)[ \t]*{_REF_SHAPED}"
+    rf"|[ \t]*(?:[,;&]|et|en)[ \t]*{_PLAIN_ROLE})*"
+)
+"""Liste de numéros de rôle : « 7407, 7409, 7410 et 7412 », « 19/1111/A et 19/2222/A »."""
+
 _ROLE_MENTION = r"(?<![\w.])(?:R\.[ \t]?G\.?|RG|F\.[ \t]?A\.?|FA)(?![\w])"
 _ROLE_LABEL = (
     rf"{_ROLE_MENTION}"
-    r"|(?<![\w])(?i:(?:num[ée]ro|n[°ºo˚]|nr)\.?[ \t]+(?:(?:de|du)[ \t]+)?r[ôo]le(?:[ \t]+g[ée]n[ée]ral)?"
-    r"|r[ôo]le[ \t]+g[ée]n[ée]ral|r[ôo]le(?=[ \t]+n[°ºo˚])|rolnummer|algemene[ \t]+rol)(?![\w])"
+    r"|(?<![\w])(?i:(?:num[ée]ros?|n[°ºo˚]s?|nrs?)\.?[ \t]+(?:(?:de|du|des)[ \t]+)?r[ôo]les?(?:[ \t]+g[ée]n[ée]ral)?"
+    r"|r[ôo]le[ \t]+g[ée]n[ée]ral|r[ôo]le(?=[ \t]+n[°ºo˚])|rolnummers?|algemene[ \t]+rol"
+    r"|inscrite?s?[ \t]+au[ \t]+r[ôo]le(?:[ \t]+g[ée]n[ée]ral)?[ \t]+sous[ \t]+(?:le|les)"
+    r"|affaires?(?=[ \t]+(?:n[°ºo˚]s?|nos?|num[ée]ros?)\.?[ \t]*\d))(?![\w])"
 )
-_ROLE_BEFORE_RE = re.compile(rf"(?:{_ROLE_LABEL}){_REF_GLUE}(?P<num>{_REF_LIST})")
+"""Mentions annonçant un numéro de rôle (« RG », « Numéros du rôle », « inscrite
+au rôle général sous le n° », « l'affaire n° 7407 »)."""
+
+_ROLE_BEFORE_RE = re.compile(rf"(?:{_ROLE_LABEL}){_REF_GLUE}(?P<num>{_ROLE_LIST})")
 _ROLE_AFTER_RE = re.compile(
     rf"(?<![\w/.-])(?P<num>{_REF_SHAPED})(?=[ \t]*\(?[ \t]*(?:{_ROLE_MENTION}))"
+)
+_ROLE_NUMBERS_BEFORE_ROLE_RE = re.compile(
+    # « inscrites sous les numéros 7407, 7409 et 7412 du rôle de la Cour »
+    rf"(?<![\w])(?i:n[°ºo˚]s?|nos?|num[ée]ros?)\.?[ \t]*(?P<num>{_ROLE_LIST})"
+    r"(?=[ \t]+(?i:du|au)[ \t]+r[ôo]le(?![\w]))"
 )
 _ROLE_GLUED_RE = re.compile(
     # « 22/321/FA », « 2024/FA/123 », « FA/2021/123 »
     r"(?<![\w/.-])(?P<num>(?:[A-Z0-9]{1,10}/)*(?:FA|RG)(?:/[A-Z0-9]{1,10})+"
     r"|(?:[A-Z0-9]{1,10}/)+(?:FA|RG))(?![\w/])"
 )
+
+_PUBLIC_CASE_NUMBER_RE = re.compile(r"[CTF]-\d{1,4}/\d{2}(?:[ \t]*(?:,|et)[ \t]*[CTF]-\d{1,4}/\d{2})*")
+"""Numéro d'affaire de la Cour de justice de l'UE (« C-694/20 ») : public."""
+
 
 _CASE_REF_LABEL = (
     r"(?<![\w])(?:R[ée]p\.|(?i:r[ée]pertoire)(?:[ \t]+(?i:g[ée]n[ée]ral))?"
@@ -534,10 +558,13 @@ _PORTALIS_RE = re.compile(
 
 def _reference_validator(min_digits: int = 2) -> Validator:
     """Valide le groupe ``num`` s'il contient assez de chiffres (« RG A » ou
-    « RN 4 » ne sont pas des numéros)."""
+    « RN 4 » ne sont pas des numéros) et n'est pas un numéro d'affaire public
+    de la Cour de justice (« affaire C-694/20 »)."""
     def _validate(m: re.Match, text: str, score: float) -> Optional[Match]:
         start, end = m.span("num")
         if sum(ch.isdigit() for ch in text[start:end]) < min_digits:
+            return None
+        if _PUBLIC_CASE_NUMBER_RE.fullmatch(text[start:end]):
             return None
         return Match(start, end, score)
     return _validate
@@ -916,6 +943,7 @@ def _build_rules() -> list[Rule]:
         Rule("FR_NUM_ROLE", _ROLE_BEFORE_RE, 0.95, validator=_validate_reference),
         Rule("FR_NUM_ROLE", _ROLE_AFTER_RE, 0.9, validator=_validate_reference),
         Rule("FR_NUM_ROLE", _ROLE_GLUED_RE, 0.9, validator=_validate_reference),
+        Rule("FR_NUM_ROLE", _ROLE_NUMBERS_BEFORE_ROLE_RE, 0.9, validator=_validate_reference),
         Rule("CASE_REFERENCE", _CASE_REF_RE, 0.85, validator=_validate_reference),
         Rule("CASE_REFERENCE", _PORTALIS_RE, 0.9, validator=_reference_validator(min_digits=1)),
         # --- Coordonnées ------------------------------------------------------
