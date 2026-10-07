@@ -293,7 +293,7 @@ def test_role_numbers_are_masked_wherever_they_reappear():
     )
     for number in ("7407", "7409", "7410", "7412"):
         assert number not in result, number
-    assert "du rôle : [NUMÉRO_RÔLE]" in result
+    assert "Numéros du rôle : [NUMÉRO_RÔLE]" in result
     assert "Arrêt n° 103/2022" in result
 
 

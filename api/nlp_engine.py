@@ -91,6 +91,8 @@ from presidio_analyzer.predefined_recognizers import (
 
 from api import settings
 from api.compute import COMPUTE
+from api import public
+from api.first_names import is_first_name
 from api.ocr import MARKERS, OCR_END, OCR_START
 from api.progress import ProgressCallback, report
 from api.persons import (
@@ -149,6 +151,7 @@ ENTITY_LABELS: dict[str, str] = {
     "FR_SIRET": "SIRET",
     "FR_SIREN": "SIREN",
     "LICENSE_PLATE": "PLAQUE",
+    "CASE_NAME": "AFFAIRE",
     "CUSTOM": "CONFIDENTIEL",
 }
 
@@ -163,7 +166,7 @@ _PRIORITY: dict[str, int] = {
     "LICENSE_PLATE": 50, "VAT_NUMBER": 50, "BE_ENTERPRISE": 50, "FR_SIRET": 45,
     "FR_NUM_ROLE": 45, "CASE_REFERENCE": 42, "FR_SIREN": 40, "URL": 40,
     "IP_ADDRESS": 40, "LOCATION": 30, "ORGANIZATION": 25, "FR_NOM_PROPRE": 20,
-    "NRP": 15, "FR_POSTAL_CODE": 10, "CUSTOM": 5,
+    "NRP": 15, "FR_POSTAL_CODE": 10, "CASE_NAME": 35, "CUSTOM": 5,
 }
 
 
@@ -187,6 +190,21 @@ PSEUDONYMS: bool = settings.env_flag("ANON_PSEUDONYMS", True)
 
 MASK_INITIALS: bool = settings.env_flag("ANON_MASK_INITIALS", True)
 """Masque les initiales seules qui désignent une personne (« P.V. et G.G. »)."""
+
+MASK_ORGANIZATIONS: bool = settings.env_flag("ANON_MASK_ORGANIZATIONS", False)
+"""Masque les personnes morales privées (``[SOCIÉTÉ]``). Par défaut, elles
+restent lisibles comme dans la jurisprudence publiée ; les institutions
+publiques ne sont jamais masquées."""
+
+MASK_PLACES: bool = settings.env_flag("ANON_MASK_PLACES", False)
+"""Masque aussi les lieux sans lien avec une personne (« les faits se sont
+produits à Wavre »). Par défaut, seuls les lieux liés à une personne
+(domicile, naissance, résidence, adresse) sont masqués ; pays, sièges de
+juridiction et institutions restent toujours lisibles."""
+
+MASK_CASE_LAW: bool = settings.env_flag("ANON_MASK_CASE_LAW", False)
+"""Masque les noms des affaires de jurisprudence citées (``[AFFAIRE]``) :
+« Michaud c. France », « Consob, C-481/19 ». Par défaut, ils restent lisibles."""
 
 
 def _thousands(n: int) -> str:
@@ -443,32 +461,19 @@ _HEADING_WORDS: frozenset[str] = frozenset({
 
 _HEADING_PARTICLES = frozenset({"DE", "DU", "DES", "LA", "LE", "L", "D"})
 
-_INSTITUTION_HEADS: frozenset[str] = frozenset({
-    "TRIBUNAL", "TRIBUNAUX", "COUR", "CONSEIL", "CODE", "LOI", "LOIS",
-    "PARQUET", "MINISTERE", "GREFFE", "CHAMBRE", "BARREAU", "JUSTICE",
-    "JURIDICTION", "COMMISSION", "CONSTITUTION", "CONVENTION", "REGLEMENT",
-    "DIRECTIVE", "MONITEUR", "GOUVERNEMENT", "PARLEMENT", "SENAT", "ETAT",
-    "SPF", "SPW", "AUDITORAT", "AUDITEUR", "PROCUREUR", "ORDRE", "ARTICLE",
-    "ARRETE", "DECRET", "ORDONNANCE", "TRAITE", "CHARTE", "CONFERENCE",
-    "ROYAUME", "REPUBLIQUE", "ASSEMBLEE", "CAISSE", "ONSS", "INAMI", "ONEM",
-    "FOREM", "ACTIRIS", "URSSAF", "CPAM", "SERVICE", "SERVICES", "DIRECTION",
-    "DEPARTEMENT", "RESSOURCES", "COMPTABILITE", "SECRETARIAT", "ADMINISTRATION",
-    "OFFICE", "INSTITUT", "AGENCE", "RGPD", "GDPR", "TVA", "BCE", "RCS", "SA",
-    "SRL", "SPRL", "SAS", "SARL", "ASBL", "DIVISION", "CANTON", "ARRONDISSEMENT",
-    # Structure du document (« Annexe photographique », « Pièce 12 ») : le
-    # NER les prend parfois pour des lieux ou des organisations.
-    "ANNEXE", "ANNEXES", "PIECE", "PIECES", "CHAPITRE", "TITRE", "SECTION",
-    "PAGE", "PARAGRAPHE", "ALINEA", "INVENTAIRE", "BORDEREAU", "SOMMAIRE",
+_COMMON_WORDS: frozenset[str] = frozenset({
+    "PARTANT", "AINSI", "TOUTEFOIS", "CEPENDANT", "ENFIN", "ENSUITE", "OR", "DONC", "NEANMOINS",
+    "CONSIDERANT", "ATTENDU", "STATUANT", "DIT", "CONDAMNE", "DECLARE", "ORDONNE", "RESERVE",
+    "RENVOIE", "DEBOUTE", "REJETTE", "ANNULE", "CONFIRME", "REFORME", "NUMERO", "NUMEROS",
+    "PARAGRAPHE", "POINT", "POINTS", "LITTERA", "QUANT", "SELON", "OUTRE", "SURPLUS", "PRECITE",
+    "PRECITEE", "IBIDEM", "IDEM", "INFRA", "SUPRA", "VOIR", "CF", "ETC", "PARTIE", "PARTIES",
+    "MOYEN", "MOYENS", "GRIEF", "GRIEFS", "BRANCHE", "BRANCHES", "EN", "DROIT", "FAIT", "FAITS",
+    "LECTURE", "DEMANDE", "DEMANDES", "RECOURS", "REQUETE", "REQUETES", "MEMOIRE", "MEMOIRES",
+    "REP", "ART", "AL", "CASS", "CONST", "DOC", "PARL", "ANN", "VOL", "PP", "ED", "OP", "CIT",
+    "IBID", "SEC", "LITT",
 })
-"""Premier mot d'une juridiction / institution / texte légal / élément de
-structure du document : jamais masqué."""
-
-_KEPT_LOCATIONS: frozenset[str] = frozenset({
-    "BELGIQUE", "BELGIE", "BELGIUM", "FRANCE", "EUROPE", "UNION EUROPEENNE",
-    "WALLONIE", "FLANDRE", "FLANDRES", "REGION WALLONNE", "REGION FLAMANDE",
-    "FEDERATION WALLONIE-BRUXELLES", "ROYAUME DE BELGIQUE",
-})
-"""Pays / régions de juridiction : conservés (aucune valeur identifiante)."""
+"""Mots courants en tête de phrase ou d'intitulé, que le NER prend parfois
+pour un nom (« Partant, il y a lieu… », « Numéros du rôle »)."""
 
 _JURISDICTION_HEADS: frozenset[str] = frozenset({
     "TRIBUNAL", "TRIBUNAUX", "COUR", "BARREAU", "DIVISION", "ARRONDISSEMENT",
@@ -730,9 +735,28 @@ _LEADING_PARTICLE_RE = re.compile(
 )
 
 
-def _clean(text: str, detections: list[Detection]) -> list[Detection]:
-    cleaned: list[Detection] = []
+def _split_lines(text: str, detections: list[Detection]) -> list[Detection]:
+    """Coupe aux sauts de ligne les entités du NER : un nom ne s'étend pas sur
+    deux lignes, alors que le NER réunit parfois la fin d'une ligne et le début
+    de la suivante (« B. Hard⏎⏎GREFFE », « I. Leclercq⏎⏎Conclusions »)."""
+    result: list[Detection] = []
     for d in detections:
+        if not d.from_ner or "\n" not in text[d.start:d.end]:
+            result.append(d)
+            continue
+        position = d.start
+        for piece in text[d.start:d.end].split("\n"):
+            if piece.strip():
+                result.append(replace(d, start=position, end=position + len(piece)))
+            position += len(piece) + 1
+    return result
+
+
+def _clean(text: str, detections: list[Detection], public_refs: _SpanIndex) -> list[Detection]:
+    """Retire les faux positifs évidents du NER (mots courants, intitulés,
+    fragments de références publiques) et rogne les civilités des noms."""
+    cleaned: list[Detection] = []
+    for d in _split_lines(text, detections):
         if d.entity in ENTITIES_TO_SKIP:
             continue
         if d.from_ner and d.entity in _NER_TYPES:
@@ -740,12 +764,25 @@ def _clean(text: str, detections: list[Detection]) -> list[Detection]:
             value = text[d.start:d.end]
             if len(value) < 2 or not any(ch.isupper() for ch in value):
                 continue  # mot commun en minuscules : pas un nom propre
+            if public_refs.overlaps(d.start, d.end):
+                continue  # fragment d'ECLI, « B.64 », « C-694/20 »…
             if _is_heading(value):
                 continue
             words = _words(value)
-            if not words:
+            if not words or all(w in _COMMON_WORDS for w in words):
                 continue
+            if (d.entity == "PERSON" and " " not in value and public.place_context(text, d.start)
+                    and not is_first_name(value)):
+                d.entity = "LOCATION"  # « dont le siège est établi à Bouge »
+            if d.entity == "PERSON" and public.looks_like_organization(value):
+                # « Cabinet Leclercq & Associés » : personne morale ; le nom de
+                # l'avocate qu'elle contient reste masqué (propagation des noms).
+                d.entity = "ORGANIZATION"
             if d.entity == "PERSON":
+                if public.is_institution(value):
+                    continue  # « Orde van Vlaamse Balies e.a. »
+                if _EPONYM_BEFORE_RE.search(text, max(0, d.start - 30), d.start):
+                    continue  # « méthode Renard », « formule Claeys » : référence publique
                 titled = TITLE_BEFORE_RE.search(text, max(0, d.start - 15), d.start)
                 span = trim_person_name(text, d.start, d.end, keep_initials=bool(titled))
                 if span is None:
@@ -756,17 +793,112 @@ def _clean(text: str, detections: list[Detection]) -> list[Detection]:
                 lead = _LEADING_PARTICLE_RE.match(text, d.start, d.end)
                 if lead:
                     d.start = lead.end()
-                if words[0] in _INSTITUTION_HEADS:
-                    continue
-                if " ".join(words) in _KEPT_LOCATIONS:
-                    continue
-                if _is_jurisdiction_seat(text, d.start):
-                    continue
                 if all(w in ROLE_WORDS or w in NAME_STOP_WORDS or w in _HEADING_WORDS
                        for w in words):
                     continue
         cleaned.append(d)
     return cleaned
+
+
+_EPONYM_BEFORE_RE = re.compile(
+    r"(?i)(?<![\w])(?:m[ée]thode|formule|tables?|bar[èe]me|th[ée]orie|doctrine|jurisprudence|"
+    r"loi|lois|r[èe]gle|principe|crit[èe]res?|test)[ \t]+(?:de[ \t]+|d['’])?$"
+)
+"""Nom propre désignant une méthode, une loi ou une théorie (« méthode
+Renard », « loi Major ») : référence publique, pas une personne du dossier."""
+
+_PERSON_TOKEN_RE = re.compile(rf"[{UPPER}][\w'’-]+")
+
+
+def _name_keys(value: str) -> set[str]:
+    """Mots d'un nom de personne pouvant l'identifier (« Jean DUPONT » →
+    {JEAN, DUPONT})."""
+    return {
+        key for key in (fold(t).strip("'’-") for t in _PERSON_TOKEN_RE.findall(value))
+        if len(key) >= 3 and key not in NAME_PARTICLES and key not in NAME_STOP_WORDS
+    }
+
+
+def _person_shaped(value: str) -> bool:
+    """« Jean DUPONT », « Marie-Claire VAN DAMME » : prénom en minuscules
+    accentuées suivi d'un nom en capitales, sans mot de personne morale."""
+    if public.looks_like_organization(value) or any(ch.isdigit() for ch in value):
+        return False
+    tokens = [t for t in value.split() if fold(t) not in NAME_PARTICLES]
+    if not 2 <= len(tokens) <= 4 or not all(re.fullmatch(rf"[{UPPER}][\w'’.-]*", t) for t in tokens):
+        return False
+    if any(fold(t).strip(".") in _HEADING_WORDS or fold(t) in public.INSTITUTION_HEADS for t in tokens):
+        return False
+    return any(t.isupper() and len(t) > 1 for t in tokens) and any(not t.isupper() for t in tokens)
+
+
+def _adjacent_name_fragment(text: str, d: Detection, persons_by_start: dict[int, Detection],
+                            persons_by_end: dict[int, Detection]) -> bool:
+    """« Alex » (organisation) + « Tallon » (personne) : le NER a coupé un nom."""
+    value = text[d.start:d.end]
+    if " " in value.strip() or public.looks_like_organization(value) or public.is_institution(value):
+        return False
+    following = persons_by_start.get(d.end + 1)
+    preceding = persons_by_end.get(d.start - 1)
+    return (following is not None and text[d.end] == " ") or (
+        preceding is not None and text[d.start - 1] == " ")
+
+
+def _decide_names(text: str, detections: list[Detection],
+                  case_law: _SpanIndex) -> tuple[list[Detection], list[tuple[int, int]]]:
+    """Décide, pour tout le document, des organisations et lieux du NER.
+
+    - Une organisation ou un lieu qui est en fait une personne (même texte
+      qu'une personne détectée ailleurs, fragment d'un nom voisin, forme
+      « Prénom NOM ») devient une personne : jamais de nom laissé visible.
+    - Institutions, pays et noms d'affaires citées restent lisibles.
+    - Lieux : masqués s'ils sont liés à une personne (domicile, naissance,
+      résidence) ou si ``MASK_PLACES`` ; organisations : si
+      ``MASK_ORGANIZATIONS``.
+    - Une personne citée dans une affaire de jurisprudence reste lisible,
+      sauf si elle apparaît aussi hors des citations (partie au litige).
+
+    La décision dépend du texte de l'entité et de son contexte immédiat,
+    pas du découpage du NER : « Orde van Vlaamse balies » est conservé
+    partout. Renvoie les détections gardées et les zones laissées lisibles.
+    """
+    persons = [d for d in detections if d.entity == "PERSON"]
+    outside = [d for d in persons if not case_law.overlaps(d.start, d.end)]
+    person_keys = {public.normalize(text[d.start:d.end]) for d in outside}
+    party_words = set().union(*(_name_keys(text[d.start:d.end]) for d in outside)) if outside else set()
+    by_start = {d.start: d for d in persons}
+    by_end = {d.end: d for d in persons}
+    result: list[Detection] = []
+    kept: list[tuple[int, int]] = []
+    for d in detections:
+        value = text[d.start:d.end]
+        in_case = case_law.overlaps(d.start, d.end) and not MASK_CASE_LAW
+        if d.entity == "PERSON" and d.from_ner and in_case and not (_name_keys(value) & party_words):
+            kept.append((d.start, d.end))
+            continue
+        if not d.from_ner or d.entity not in ("ORGANIZATION", "LOCATION"):
+            result.append(d)
+            continue
+        institution = public.is_institution(value)
+        if not in_case and (public.normalize(value) in person_keys or not institution and (
+                _person_shaped(value) or _adjacent_name_fragment(text, d, by_start, by_end))):
+            d.entity = "PERSON"
+            result.append(d)
+            continue
+        if in_case or institution:
+            kept.append((d.start, d.end))
+        elif d.entity == "LOCATION":
+            if public.is_country(value) or _is_jurisdiction_seat(text, d.start):
+                kept.append((d.start, d.end))
+            elif public.person_linked_place(text, d.start) or MASK_PLACES:
+                result.append(d)
+            else:
+                kept.append((d.start, d.end))
+        elif MASK_ORGANIZATIONS:
+            result.append(d)
+        else:
+            kept.append((d.start, d.end))
+    return result, kept
 
 
 _IDENTIFIER_TYPES: frozenset[str] = frozenset({
@@ -892,15 +1024,22 @@ def _propagate_identifiers(text: str, detections: list[Detection]) -> list[Detec
     return detections + added
 
 
-def _add_uppercase_names(text: str, detections: list[Detection]) -> list[Detection]:
-    """Ajoute les séquences en capitales (hors intitulés) non encore détectées."""
+def _add_uppercase_names(text: str, detections: list[Detection],
+                         excluded: _SpanIndex) -> list[Detection]:
+    """Ajoute les séquences en capitales (hors intitulés) non encore détectées.
+
+    ``excluded`` : zones laissées lisibles (institutions, références
+    publiques, jurisprudence, organisations conservées).
+    """
     # Les séquences trouvées ne se chevauchent pas entre elles : l'index des
     # détections existantes suffit.
     occupied = _SpanIndex((d.start, d.end) for d in detections)
     added: list[Detection] = []
     for m in _UPPERCASE_SEQ_RE.finditer(text):
-        if occupied.overlaps(m.start(), m.end()):
+        if occupied.overlaps(m.start(), m.end()) or excluded.overlaps(m.start(), m.end()):
             continue
+        if not MASK_ORGANIZATIONS and public.looks_like_organization(m.group(0)):
+            continue  # « SRL BATI-MEUSE » : personne morale, conservée
         tokens = list(re.finditer(r"\S+", m.group(0)))
         # « MONSIEUR JEAN DUPONT » : la civilité n'est pas masquée.
         while tokens and fold(tokens[0].group(0)).strip(".") in TITLE_WORDS:
@@ -1146,13 +1285,20 @@ def detect_entities(
     protected = _protected_spans(analysis_text)
     ocr_spans = _ocr_spans(analysis_text)
 
+    public_refs = public.public_reference_spans(analysis_text)
+    case_law = public.case_law_spans(analysis_text)
+
     detections = _raw_detections(analysis_text, progress)
     detections = _apply_thresholds(detections, ocr_spans)
     detections = _trim_protected(analysis_text, detections, protected)
-    detections = _clean(analysis_text, detections)
+    detections = _clean(analysis_text, detections, _SpanIndex(public_refs))
     detections = _detach_identifiers(analysis_text, detections)
+    detections, kept = _decide_names(analysis_text, detections, _SpanIndex(case_law))
     detections = _propagate_identifiers(analysis_text, detections)
-    detections = _add_uppercase_names(analysis_text, detections)
+    if MASK_CASE_LAW:
+        detections += [Detection(s, e, "CASE_NAME", 0.9) for s, e in case_law]
+    detections = _add_uppercase_names(
+        analysis_text, detections, _SpanIndex(kept + public_refs + case_law))
     detections = split_persons(analysis_text, detections)
     detections = _propagate_persons(analysis_text, detections)
     detections = attach_initials(analysis_text, detections)

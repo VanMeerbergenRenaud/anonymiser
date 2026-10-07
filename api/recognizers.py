@@ -36,6 +36,8 @@ from typing import Callable, Optional
 
 from presidio_analyzer import EntityRecognizer, RecognizerResult
 
+from api.first_names import AMBIGUOUS_FIRST_NAMES, is_first_name
+
 # ---------------------------------------------------------------------------
 # Briques de base des expressions régulières
 # ---------------------------------------------------------------------------
@@ -132,7 +134,8 @@ MISC_STOP_WORDS: frozenset[str] = frozenset({
     "FEVRIER", "MARS", "AVRIL", "MAI", "JUIN", "JUILLET", "AOUT", "SEPTEMBRE",
     "OCTOBRE", "NOVEMBRE", "DECEMBRE", "X", "Y", "Z", "XX", "XXX", "N",
     "TOUS", "TOUTES", "CI-DESSUS", "CI-APRES", "PAR", "POUR", "CONTRE",
-    "AFFAIRE", "OBJET", "REF", "DOSSIER",
+    "AFFAIRE", "OBJET", "REF", "DOSSIER", "CHER", "CHERE", "CHERS", "CHERES", "BONJOUR",
+    "CORDIALEMENT", "CONFRATERNELLEMENT", "VEUILLEZ",
 })
 
 NAME_STOP_WORDS: frozenset[str] = TITLE_WORDS | ROLE_WORDS | STREET_TYPE_WORDS | MISC_STOP_WORDS
@@ -646,6 +649,11 @@ _ADDRESS_NL_RE = re.compile(
     rf"(?P<tail>{_JOIN}{_POSTAL_CITY})?"
 )
 _POSTAL_CITY_RE = re.compile(rf"(?<![\w.,/-]){_POSTAL_CITY}")
+_LANDMARK_STREET_RE = re.compile(
+    # « Grand-Place 22 », « Grand'Rue 5 », « Grote Markt 1 » : nom de voie sans type séparé.
+    rf"(?<![\w-])(?P<street>(?i:grand[-'’ ]place|grand[-'’ ]rue|grote[ \t]+markt|grand[-'’ ]route)"
+    rf"[ \t]*,?[ \t]*{_HOUSE_NUMBER}{_BOX})(?P<tail>{_JOIN}{_POSTAL_CITY})?"
+)
 
 CITY_STOP_WORDS: frozenset[str] = frozenset({
     "CODE", "ARTICLE", "ARTICLES", "ART", "LOI", "EUROS", "EURO", "EUR",
@@ -679,6 +687,8 @@ def _validate_address(m: re.Match, text: str, score: float) -> Optional[Match]:
             and not street_type[:1].isupper()):
         return None
     if not has_number and not tail_ok:
+        if street == street.upper():
+            return None  # intitulé en capitales (« BAIL DE RÉSIDENCE PRINCIPALE »)
         # Rue sans numéro ni code postal : uniquement pour les types non ambigus
         # (« rue des Acacias ») ou un type ambigu écrit avec majuscule
         # (« Place Saint-Lambert », mais pas « mise en place de… »).
@@ -788,6 +798,96 @@ def trim_person_name(text: str, start: int, end: int,
     return tokens[0][0], tokens[-1][1]
 
 
+_NOT_A_NAME_BEFORE_RE = re.compile(
+    r"(?i)(?<![\w])(?:saint|sainte|st|ste|rue|avenue|av\.|boulevard|bd|place|chauss[ée]e|square|"
+    r"quai|all[ée]e|dr[èe]ve|chemin|impasse|m[ée]thode|loi|arr[êe]t|affaire|fondation|institut|"
+    r"universit[ée]|[ée]cole|coll[èe]ge|lyc[ée]e|ath[ée]n[ée]e|h[ôo]pital|clinique|centre|prix|"
+    r"salle|stade|parc|gare|roi|reine|prince|princesse|pape|royal|royale|straat|laan|plein)[ \t]*$"
+)
+"""Ce qui précède un prénom qui ne désigne pas une personne du dossier
+(« rue Jean Jaurès », « le Roi Baudouin », « Institut Jules Bordet »)."""
+
+_FIRST_NAME_LED_RE = re.compile(
+    rf"(?<![\w'’.-])(?P<name>[{UPPER}][{LOWER}]+(?:-[{UPPER}][{LOWER}]+)?"
+    rf"(?:[ \t]+(?:{_NAME_PARTICLE})*(?:{UPPER_WORD}|{CAP_WORD})){{1,3}})"
+)
+_SINGLE_FIRST_NAME_RE = re.compile(
+    rf"(?<=[{LOWER},;:][ \t])(?P<name>[{UPPER}][{LOWER}]+(?:-[{UPPER}][{LOWER}]+)?)"
+    rf"(?![\w'’-]|[ \t]+(?:{_NAME_PARTICLE})*[{UPPER}])"
+)
+
+
+def _validate_first_name_led(m: re.Match, text: str, score: float) -> Optional[Match]:
+    """« Alex Tallon », « Karim BOUZIANE » : prénom connu suivi d'un nom."""
+    if not is_first_name(m.group("name").split()[0]):
+        return None
+    if _NOT_A_NAME_BEFORE_RE.search(text, max(0, m.start() - 25), m.start()):
+        return None
+    span = trim_person_name(text, m.start("name"), m.end("name"))
+    if span is None or len(text[span[0]:span[1]].split()) < 2:
+        return None
+    return Match(span[0], span[1], score)
+
+
+def _validate_single_first_name(m: re.Match, text: str, score: float) -> Optional[Match]:
+    """Prénom seul en milieu de phrase (« mon ami Yannick », « les enfants Lucas
+    et Emma ») ; jamais les prénoms ambigus (« Martin », « Nancy », « Rose »)."""
+    name = m.group("name")
+    if not is_first_name(name) or any(
+            fold(part) in AMBIGUOUS_FIRST_NAMES for part in name.split("-")):
+        return None
+    if _NOT_A_NAME_BEFORE_RE.search(text, max(0, m.start() - 25), m.start()):
+        return None
+    return Match(m.start("name"), m.end("name"), score)
+
+
+_INITIAL_NAME_RE = re.compile(
+    # « C. Wauters », « J.-P. Hordies », « S. de Bethune », « N. DUPONT »
+    rf"(?<![\w.'’-])(?P<name>[{UPPER}]\.(?:-[{UPPER}]\.)?[ \t]+(?:{_NAME_PARTICLE})*"
+    rf"(?:{CAP_WORD}|{UPPER_WORD})(?:[ \t]+(?:{_NAME_PARTICLE})*(?:{CAP_WORD}|{UPPER_WORD}))?)"
+)
+_NOT_SURNAMES = frozenset({
+    "LE", "LA", "LES", "DE", "DU", "DES", "UN", "UNE", "EN", "AU", "AUX", "IL", "ELLE", "ILS",
+    "ELLES", "ON", "CE", "CET", "CETTE", "CES", "SI", "QUANT", "SELON", "VU", "SUR", "SOUS",
+    "DISCUSSION", "PROCEDURE", "FAITS", "MOTIFS", "DECISION", "DISPOSITIF", "INTRODUCTION",
+    "CONCLUSION", "CONCLUSIONS", "ANALYSE", "RECEVABILITE", "FONDEMENT", "EN DROIT", "ANTECEDENTS",
+    "DEMANDE", "DEMANDES", "QUESTION", "QUESTIONS", "GENERALITES", "PRINCIPES", "CONTEXTE",
+})
+
+
+def _validate_initial_name(m: re.Match, text: str, score: float) -> Optional[Match]:
+    """Initiale suivie d'un nom : désigne une personne quel que soit le contexte
+    (le NER la manque ou la classe parfois comme lieu)."""
+    words = m.group("name").split()[1:]
+    if not words or _token_key(words[0]) in _NOT_SURNAMES:
+        return None
+    start = m.start("name")
+    if m.group("name").startswith("M.") and len([w for w in words if _token_key(w) not in NAME_PARTICLES]) >= 2:
+        start = m.start("name") + m.group("name").index(words[0])  # « M. Jean DUPONT » : Monsieur
+    span = trim_person_name(text, start, m.end("name"), keep_initials=True)
+    if span is None:
+        return None
+    return Match(span[0], span[1], score)
+
+
+_CARD_FIELD_LABELS = frozenset({"NOM", "NAME", "NAAM", "PRENOM", "PRENOMS", "GIVEN", "SURNAME",
+                                "VOORNAMEN", "VOORNAAM", "DATE", "NATIONALITE", "SEXE"})
+_CARD_NAME_RE = re.compile(
+    # Carte d'identité, formulaire en colonnes : « Nom / Name » puis la valeur à la ligne.
+    r"(?im)^[ \t]*(?:nom|name|naam|surname|pr[ée]noms?|given[ \t]+names?|voornamen|voornaam)"
+    r"(?:[ \t]*/[ \t]*(?:name|naam|surname|given[ \t]+names?|voornamen|pr[ée]noms?))?[ \t]*\n"
+    r"[ \t]*(?P<value>[^\n]{1,60})"
+)
+
+
+def _validate_card_name(m: re.Match, text: str, score: float) -> Optional[Match]:
+    value = m.group("value").strip()
+    if not re.search(rf"[{UPPER}]", value) or _token_key(value.split()[0]) in _CARD_FIELD_LABELS:
+        return None
+    span = trim_person_name(text, m.start("value"), m.start("value") + len(m.group("value").rstrip()))
+    return Match(span[0], span[1], score) if span else None
+
+
 def _validate_titled_person(m: re.Match, text: str, score: float) -> Optional[Match]:
     span = trim_person_name(text, m.start("name"), m.end("name"), keep_initials=True)
     if span is None:
@@ -888,12 +988,14 @@ _PHONE_FIELD_RE = _field(r"t[ée]l(?:[ée]phone)?(?:[ \t]+(?:portable|fixe|mobil
 # ---------------------------------------------------------------------------
 
 _BIRTH_DATE_RE = re.compile(
-    rf"(?i:\bn[ée](?:e|\(e\))?s?)[ \t]+(?:(?i:à|a|en|au)[ \t]+[^\n,;()]{{1,40}}?,?[ \t]+)?"
+    # « né à Liège le 31 mai 2001 », « née Chloé GILSON, le 12 mai 2010 »
+    rf"(?i:\bn[ée](?:e|\(e\))?s?)[ \t]+(?:[^\n.;()]{{1,60}}?,?[ \t]+)??"
     rf"(?i:le)[ \t]+(?P<date>{DATE})"
 )
 _BIRTH_DATE_LABEL_RE = re.compile(
+    # « Date de naissance : 30.07.1985 », ou date à la ligne (carte d'identité)
     rf"(?i:date[ \t]+de[ \t]+naissance|geboortedatum|geboren[ \t]+op|date[ \t]+of[ \t]+birth)"
-    rf"[ \t]*:?[ \t]*(?P<date>{DATE})"
+    rf"[ \t]*:?[ \t]*\n?[ \t]*(?P<date>{DATE})"
 )
 _BIRTH_DATE_NL_RE = re.compile(
     rf"(?i:geboren)[ \t]+te[ \t]+\S+(?:[ \t]+\S+)?[ \t]+op[ \t]+(?P<date>{DATE})"
@@ -960,6 +1062,7 @@ def _build_rules() -> list[Rule]:
         Rule("ADDRESS", _ADDRESS_BE_RE, 0.85, validator=_validate_address),
         Rule("ADDRESS", _ADDRESS_NL_RE, 0.85, validator=_validate_address),
         Rule("ADDRESS", _POSTAL_CITY_RE, 0.75, validator=_validate_postal_city),
+        Rule("ADDRESS", _LANDMARK_STREET_RE, 0.85, validator=_validate_address),
         Rule("FR_POSTAL_CODE", re.compile(rf"(?<=[{UPPER}{LOWER}])[ \t]*\((?P<pc>\d{{4,5}})\)"), 0.6,
              validator=_validate_postal_in_parentheses),
         Rule("FR_POSTAL_CODE", re.compile(r"(?<![\d.,])\d{4,5}(?![\d.,])"), 0.2,
@@ -970,6 +1073,10 @@ def _build_rules() -> list[Rule]:
         Rule("PERSON", _TITLED_PERSON_RE, 0.9, group="name", validator=_validate_titled_person),
         Rule("PERSON", _SOUSSIGNE_RE, 0.9, group="name", validator=_validate_titled_person),
         Rule("PERSON", _NAME_FIELD_RE, 0.85, group="value", validator=_field_validator(person=True)),
+        Rule("PERSON", _CARD_NAME_RE, 0.8, group="value", validator=_validate_card_name),
+        Rule("PERSON", _INITIAL_NAME_RE, 0.8, group="name", validator=_validate_initial_name),
+        Rule("PERSON", _FIRST_NAME_LED_RE, 0.7, group="name", validator=_validate_first_name_led),
+        Rule("PERSON", _SINGLE_FIRST_NAME_RE, 0.6, group="name", validator=_validate_single_first_name),
         # --- Naissance, nationalité ---------------------------------------------
         Rule("BIRTH_DATE", _BIRTH_DATE_RE, 0.95, group="date"),
         Rule("BIRTH_DATE", _BIRTH_DATE_LABEL_RE, 0.95, group="date"),
