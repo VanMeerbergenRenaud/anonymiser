@@ -146,3 +146,16 @@ def test_hyphen_decision(left, right, expected):
     from collections import Counter
 
     assert _join_text(left, right, Counter()) == expected
+
+
+def test_words_split_into_fragments_are_not_glued():
+    """Fragments d'une ligne justifiée dont l'espace final occupe tout l'écart :
+    « déposée » + « au greffe » ne doit pas devenir « déposéeau »."""
+    pdf = fitz.open()
+    page = pdf.new_page()
+    x = 72
+    for word in ("la", "requête", "déposée", "au", "greffe", "le", "4", "octobre."):
+        page.insert_text((x, 100), word + " ", fontsize=11)
+        x += fitz.get_text_length(word + " ", fontsize=11)
+    text = extract_text("collé.pdf", pdf.tobytes())
+    assert text == "la requête déposée au greffe le 4 octobre."

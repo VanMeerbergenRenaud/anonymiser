@@ -791,18 +791,22 @@ def _make_row(segments: list[_Segment], column_gap: float) -> _Row:
     # Ligne justifiée (mots posés un par un) : espaces réguliers, pas des colonnes.
     ordered = sorted(gaps)
     justified = len(gaps) >= 2 and ordered[-1] <= 2.5 * max(ordered[len(ordered) // 2], 1.0)
-    text = inked[0].text.rstrip()
+    text = inked[0].text
     columns = False
     for prev, seg, gap in zip(inked, inked[1:], gaps):
-        piece = seg.text.rstrip()
+        piece = seg.text
         if gap > column_gap and not justified:
             text = text.rstrip() + "\t" + piece.lstrip()
             columns = True
-        elif gap > 0.15 * max(prev.size, seg.size) and not text.endswith((" ", "\t")) \
-                and not piece.startswith(" "):
+        elif text.endswith((" ", "\t")) or piece.startswith((" ", "\t")):
+            # L'espace final d'un fragment occupe souvent tout l'écart : c'est
+            # alors la seule trace de la séparation des mots.
+            text = text.rstrip(" ") + (" " if not text.endswith("\t") else "") + piece.lstrip(" ")
+        elif gap > 0.15 * max(prev.size, seg.size):
             text += " " + piece
         else:
             text += piece
+    text = text.rstrip()
     return _Row(
         min(s.x0 for s in inked), min(s.y0 for s in inked), max(s.x1 for s in inked),
         max(s.y1 for s in inked), text, max(s.size for s in inked),

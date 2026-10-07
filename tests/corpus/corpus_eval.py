@@ -198,16 +198,21 @@ def word_fidelity(source: list[str], extracted: str,
     """
     ignore_patterns = [_pattern(v) for v in ignore]
     raw: list[str] = []
+    hyphenated: set[int] = set()  # index du dernier morceau d'un mot coupé (« conven- »)
     for word in source:
         if any(p.search(word) for p in ignore_patterns):
             continue
         raw.extend(_pieces(word))
+        if word.endswith("-") and raw:
+            hyphenated.add(len(raw) - 1)
     got = Counter(_pieces(extracted))
     want = Counter(raw)
     lost = want - got
     extra = got - want
-    # Césures recollées : deux morceaux consécutifs perdus = un morceau en trop.
-    for a, b in zip(raw, raw[1:]):
+    # Césures recollées : « conven- » + « tionnelles » = « conventionnelles ».
+    for index, (a, b) in enumerate(zip(raw, raw[1:])):
+        if index not in hyphenated:
+            continue  # deux mots soudés (« déposéeau ») restent une erreur
         joined = a + b
         if lost[a] and lost[b] and extra[joined]:
             lost[a] -= 1
