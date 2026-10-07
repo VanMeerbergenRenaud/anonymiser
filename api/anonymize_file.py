@@ -18,6 +18,16 @@ Formats supportés en entrée
 Le texte lu dans une image est encadré par les marqueurs de ``api.ocr``
 (« --- Texte extrait d'une image (attention) --- ») pour signaler qu'il
 provient d'une reconnaissance automatique et doit être relu.
+
+Gros fichiers (jusqu'à ``settings.MAX_FILE_MB``)
+-------------------------------------------------
+- Les pages scannées et images de PDF ne sont rendues qu'au moment d'être
+  lues par l'OCR (jamais toutes en mémoire) ; l'OCR des pages précédentes
+  se poursuit pendant le rendu de la suivante.
+- Chaque étape signale son avancement (``progress``) et peut être annulée
+  (voir ``api.progress``).
+- Un document dont le texte dépasse ``settings.MAX_TEXT_CHARS`` est refusé
+  dès que la limite est atteinte, sans attendre la fin de l'OCR.
 """
 
 from __future__ import annotations
@@ -28,15 +38,16 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import fitz  # PyMuPDF
 from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from lxml import etree
-from PIL import ImageSequence
 
-from api import ocr
-from api.nlp_engine import anonymize_text
+from api import ocr, settings
+from api.nlp_engine import TextTooLongError, anonymize_text, check_text_length
+from api.progress import ProgressCallback, report
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +55,8 @@ logger = logging.getLogger(__name__)
 # Constantes
 # ---------------------------------------------------------------------------
 
-MAX_FILE_SIZE: int = int(10 * 1024 * 1024)
-"""Taille maximale d'un fichier uploadé (10 Mo)."""
+MAX_FILE_SIZE: int = settings.MAX_FILE_SIZE
+"""Taille maximale d'un fichier uploadé (``ANON_MAX_FILE_MB``, défaut 100 Mo)."""
 
 IMAGE_EXTENSIONS: frozenset[str] = frozenset({
     ".png", ".jpg", ".jpeg", ".jfif", ".tif", ".tiff", ".bmp", ".gif", ".webp",
@@ -54,8 +65,9 @@ IMAGE_EXTENSIONS: frozenset[str] = frozenset({
 
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".txt", ".docx", ".pdf", *sorted(IMAGE_EXTENSIONS))
 
-MAX_OCR_PAGES: int = int(os.environ.get("ANON_OCR_MAX_PAGES", "60"))
-"""Nombre maximal de pages / images lues par OCR dans un même fichier."""
+MAX_OCR_PAGES: int = settings.env_int("ANON_OCR_MAX_PAGES", 300, minimum=0)
+"""Nombre maximal de pages / images lues par OCR dans un même fichier
+(≈ 1,3 s par page A4 scannée avec 4 processus OCR)."""
 
 _PDF_DPI = 300
 """Résolution de rendu des pages scannées (300 dpi = optimum Tesseract)."""
@@ -68,17 +80,33 @@ NO_TEXT_IN_IMAGE = "--- Aucun texte détecté dans l'image ---"
 
 
 class FileProcessingError(ValueError):
-    """Erreur « utilisateur » (fichier protégé, corrompu…) → HTTP 400."""
+    """Erreur « utilisateur » (fichier protégé, corrompu, trop long…).
+
+    ``status`` est le code HTTP à renvoyer (400 par défaut).
+    """
+
+    status: int = 400
+
+
+class DocumentTooLongError(FileProcessingError):
+    """Le texte du document dépasse ``settings.MAX_TEXT_CHARS``."""
+
+    status = 413
 
 
 # ---------------------------------------------------------------------------
 # Document intermédiaire : texte + images à lire
 # ---------------------------------------------------------------------------
 
+ImageSource = Callable[[], Optional[bytes]]
+"""Rendu différé d'une image (page de PDF…), appelé au moment de l'OCR."""
+
+
 @dataclass
 class _Image:
-    data: bytes | None
-    """Image prête pour l'OCR (PNG/JPEG…), ou None si format illisible."""
+    data: bytes | ImageSource | None
+    """Image prête pour l'OCR (PNG/JPEG…), fonction qui la produit, ou None
+    si le format est illisible."""
 
     over_limit: bool = False
     """Vrai si l'image dépasse le nombre maximal d'OCR par fichier."""
@@ -99,6 +127,8 @@ class _Doc:
 
     parts: list[str | _Image] = field(default_factory=list)
     _new_block: bool = True
+    text_length: int = 0
+    """Nombre de caractères de texte (hors OCR) : garde-fou de longueur."""
 
     def text(self, value: str) -> None:
         if not value or not value.strip():
@@ -108,6 +138,22 @@ class _Doc:
         else:
             self.parts.append(value)
         self._new_block = False
+        self._count(value)
+
+    def continue_last(self, value: str) -> None:
+        """Prolonge le dernier bloc de texte (phrase coupée par un saut de page)."""
+        last = self.parts[-1] if self.parts else None
+        if not isinstance(last, str):
+            self.text(value)
+            return
+        self.parts[-1] = last.rstrip() + " " + value.lstrip()
+        self._count(value)
+
+    def _count(self, value: str) -> None:
+        self.text_length += len(value) + 1
+        if self.text_length > settings.MAX_TEXT_CHARS:
+            # Refus immédiat : inutile de lire (et d'OCRiser) la suite.
+            raise DocumentTooLongError(str(TextTooLongError()))
 
     def image(self, image: _Image) -> None:
         self.parts.append(image)
@@ -142,7 +188,7 @@ def _append(doc: _Doc, items: list[str | _Image]) -> None:
             doc.image(item)
 
 
-def _render(doc: _Doc) -> tuple[str, int, int]:
+def _render(doc: _Doc, progress: Optional[ProgressCallback] = None) -> tuple[str, int, int]:
     """Lance l'OCR des images (en parallèle) et assemble le texte final.
 
     Renvoie ``(texte, images_lues, images_non_analysées)``.
@@ -150,14 +196,15 @@ def _render(doc: _Doc) -> tuple[str, int, int]:
     available = ocr.is_available()
     to_read: list[_Image] = []
     for part in doc.parts:
-        if isinstance(part, _Image) and part.data and not part.over_limit:
+        if isinstance(part, _Image) and part.data is not None and not part.over_limit:
             if len(to_read) < MAX_OCR_PAGES:
                 to_read.append(part)
             else:
                 part.over_limit = True
     results = {}
     if available and to_read:
-        results = dict(zip(map(id, to_read), ocr.ocr_many([img.data for img in to_read])))
+        texts = ocr.ocr_many([img.data for img in to_read], progress=progress)
+        results = dict(zip(map(id, to_read), texts))
 
     out: list[str] = []
     found = skipped = 0
@@ -203,7 +250,7 @@ def _ocr_words(text: str) -> set[str]:
 # Nettoyage du texte extrait
 # ---------------------------------------------------------------------------
 
-_INVISIBLE = dict.fromkeys(map(ord, "\u00ad\u200b\u200c\u200d\u2060\ufeff"), None)
+_INVISIBLE = dict.fromkeys(map(ord, "­​‌‍⁠﻿"), None)
 
 
 def _clean_text(text: str) -> str:
@@ -217,10 +264,20 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def _anonymize(doc: _Doc) -> ProcessedFile:
-    text, found, skipped = _render(doc)
-    anonymized = anonymize_text(_clean_text(text))
+def _anonymize(text: str, found: int, skipped: int,
+               progress: Optional[ProgressCallback]) -> ProcessedFile:
+    cleaned = _clean_text(text)
+    try:
+        check_text_length(cleaned)
+    except TextTooLongError as exc:
+        raise DocumentTooLongError(str(exc)) from exc
+    anonymized = anonymize_text(cleaned, progress=progress)
     return ProcessedFile(anonymized.encode("utf-8"), ocr_images=found, skipped_images=skipped)
+
+
+def _process_doc(doc: _Doc, progress: Optional[ProgressCallback]) -> ProcessedFile:
+    text, found, skipped = _render(doc, progress)
+    return _anonymize(text, found, skipped, progress)
 
 
 # ---------------------------------------------------------------------------
@@ -244,10 +301,10 @@ def _decode_text(content: bytes) -> str:
         return content.decode("latin-1")
 
 
-def process_txt(content: bytes) -> ProcessedFile:
+def process_txt(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
     doc = _Doc()
     doc.text(_decode_text(content))
-    return _anonymize(doc)
+    return _process_doc(doc, progress)
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +500,8 @@ def _docx_to_doc(content: bytes) -> _Doc:
     return doc
 
 
-def process_docx(content: bytes) -> ProcessedFile:
-    return _anonymize(_docx_to_doc(content))
+def process_docx(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
+    return _process_doc(_docx_to_doc(content), progress)
 
 
 # ---------------------------------------------------------------------------
@@ -532,13 +589,34 @@ def _visible_text_ratio(page) -> float:
     return 1 - invisible / total
 
 
-def _render_png(page, clip=None, dpi: int = _PDF_DPI) -> bytes:
+def _render_png(pdf, page_number: int, clip=None, dpi: int = _PDF_DPI) -> bytes:
+    """Rend (une zone d') une page en PNG niveaux de gris pour l'OCR."""
+    page = pdf[page_number]
     rect = clip or page.rect
     # Limite la taille en pixels (pages A3, images géantes).
     max_side_px = 6000
     dpi = min(dpi, int(max_side_px * 72 / max(rect.width, rect.height, 1)))
     pix = page.get_pixmap(dpi=max(dpi, 72), clip=clip, colorspace=fitz.csGRAY, alpha=False)
     return pix.tobytes("png")
+
+
+def _page_renderer(pdf, page_number: int, clip=None, dpi: int = _PDF_DPI) -> ImageSource:
+    """Rendu différé : la page n'est rendue qu'au moment de son OCR.
+
+    PyMuPDF n'est pas utilisable depuis plusieurs threads : le rendu a lieu
+    dans le thread du traitement (voir ``ocr.ocr_many``), seul l'OCR est
+    parallélisé.
+    """
+    rect = fitz.Rect(clip) if clip is not None else None
+
+    def render() -> Optional[bytes]:
+        try:
+            return _render_png(pdf, page_number, clip=rect, dpi=dpi)
+        except Exception as exc:  # noqa: BLE001 — page endommagée : ignorée
+            logger.warning("Rendu impossible (page %s) : %s", page_number + 1, exc)
+            return None
+
+    return render
 
 
 def _pdf_extras(page) -> list[str]:
@@ -562,7 +640,7 @@ def _pdf_extras(page) -> list[str]:
     return extras
 
 
-def _pdf_to_doc(content: bytes) -> _Doc:
+def _open_pdf(content: bytes):
     try:
         pdf = fitz.open(stream=content, filetype="pdf")
     except Exception as exc:  # noqa: BLE001
@@ -572,77 +650,131 @@ def _pdf_to_doc(content: bytes) -> _Doc:
         raise FileProcessingError(
             "PDF protégé par mot de passe : retirez la protection puis réessayez."
         )
+    return pdf
 
+
+@dataclass
+class _PdfState:
+    """État partagé entre les pages d'un PDF."""
+
+    ocr_budget: int = field(default_factory=lambda: MAX_OCR_PAGES)
+    seen_xrefs: set[int] = field(default_factory=set)
+
+    def take_ocr_slot(self) -> bool:
+        if self.ocr_budget <= 0:
+            return False
+        self.ocr_budget -= 1
+        return True
+
+
+def _page_items(pdf, page, state: _PdfState) -> list[str | _Image]:
+    """Blocs de texte et images d'une page, dans l'ordre de lecture."""
+    number = page.number
+    blocks = _page_text_blocks(page)
+    native = "\n".join(text for _, text in blocks)
+    alnum = sum(ch.isalnum() for ch in native)
+    page_area = max(page.rect.width * page.rect.height, 1)
+    images = [
+        info for info in page.get_image_info(xrefs=True)
+        if fitz.Rect(info["bbox"]).intersects(page.rect)
+    ]
+    items: list[tuple[float, float, str | _Image]] = [
+        (bbox[1], bbox[0], text) for bbox, text in blocks
+    ]
+
+    if alnum < 25 and (images or page.get_drawings()):
+        # Page scannée (ou texte vectorisé) : OCR de la page entière. Le peu
+        # de texte natif (légende, n° de page) sert à écarter un OCR qui ne
+        # ferait que le répéter.
+        if state.take_ocr_slot():
+            native_words = frozenset(_ocr_words(native))
+            items.append((0.0, 0.0, _Image(_page_renderer(pdf, number), native_words=native_words)))
+        else:
+            items.append((0.0, 0.0, _Image(None, over_limit=True)))
+    elif images:
+        visible = _visible_text_ratio(page)
+        native_words = frozenset(_ocr_words(native))
+        for info in images:
+            rect = fitz.Rect(info["bbox"]) & page.rect
+            if rect.width < 30 or rect.height < 12:
+                continue  # puce, filet, icône
+            xref = info.get("xref", 0)
+            if xref and xref in state.seen_xrefs:
+                continue  # logo répété sur chaque page
+            if xref:
+                state.seen_xrefs.add(xref)
+            if visible < 0.5 and rect.width * rect.height > 0.5 * page_area:
+                continue  # scan déjà doté d'une couche texte (OCR existant)
+            if not state.take_ocr_slot():
+                items.append((rect.y0, rect.x0, _Image(None, over_limit=True)))
+                continue
+            dpi = 400 if rect.width < 200 else _PDF_DPI
+            renderer = _page_renderer(pdf, number, clip=rect, dpi=dpi)
+            items.append((rect.y0, rect.x0, _Image(renderer, native_words=native_words)))
+
+    items.sort(key=lambda it: (round(it[0]), it[1]))
+    return [item for _, _, item in items] + _pdf_extras(page)
+
+
+def _pdf_to_doc(pdf, progress: Optional[ProgressCallback] = None) -> _Doc:
+    """Texte de chaque page + images à lire (rendues plus tard, à la demande).
+
+    Une page endommagée n'interrompt pas le document : elle est signalée
+    (``ocr.UNREADABLE_PAGE``) et les autres pages sont traitées.
+    """
     doc = _Doc()
-    seen_xrefs: set[int] = set()
-    ocr_budget = MAX_OCR_PAGES
-    try:
-        for page in pdf:
-            blocks = _page_text_blocks(page)
-            native = "\n".join(text for _, text in blocks)
-            alnum = sum(ch.isalnum() for ch in native)
-            page_area = max(page.rect.width * page.rect.height, 1)
-            images = [
-                info for info in page.get_image_info(xrefs=True)
-                if fitz.Rect(info["bbox"]).intersects(page.rect)
-            ]
-            items: list[tuple[float, float, str | _Image]] = [
-                (bbox[1], bbox[0], text) for bbox, text in blocks
-            ]
-
-            if alnum < 25 and (images or page.get_drawings()):
-                # Page scannée (ou texte vectorisé) : OCR de la page entière.
-                if ocr_budget > 0:
-                    ocr_budget -= 1
-                    items.append((0.0, 0.0, _Image(_render_png(page))))
-                else:
-                    items.append((0.0, 0.0, _Image(None, over_limit=True)))
-            else:
-                visible = _visible_text_ratio(page)
-                native_words = frozenset(_ocr_words(native))
-                for info in images:
-                    rect = fitz.Rect(info["bbox"]) & page.rect
-                    if rect.width < 30 or rect.height < 12:
-                        continue  # puce, filet, icône
-                    xref = info.get("xref", 0)
-                    if xref and xref in seen_xrefs:
-                        continue  # logo répété sur chaque page
-                    if xref:
-                        seen_xrefs.add(xref)
-                    if visible < 0.5 and rect.width * rect.height > 0.5 * page_area:
-                        continue  # scan déjà doté d'une couche texte (OCR existant)
-                    if ocr_budget <= 0:
-                        items.append((rect.y0, rect.x0, _Image(None, over_limit=True)))
-                        continue
-                    ocr_budget -= 1
-                    dpi = 400 if rect.width < 200 else _PDF_DPI
-                    png = _render_png(page, clip=rect, dpi=dpi)
-                    items.append((rect.y0, rect.x0, _Image(png, native_words=native_words)))
-
-            items.sort(key=lambda it: (round(it[0]), it[1]))
-            ordered = [item for _, _, item in items]
-            previous = doc.parts[-1] if doc.parts else None
-            if (ordered and isinstance(ordered[0], str) and isinstance(previous, str)
-                    and _continues_paragraph(previous, ordered[0])):
-                # Phrase coupée par un saut de page (« né le 10 mai | 1988 ») :
-                # recollée pour que la date / le nom restent détectables.
-                doc.parts[-1] = previous.rstrip() + " " + ordered.pop(0).lstrip()
-            doc.section()  # une page = un bloc
-            _append(doc, ordered)
-            for extra in _pdf_extras(page):
-                doc.text(extra)
-    finally:
-        pdf.close()
+    state = _PdfState()
+    page_count = pdf.page_count
+    report(progress, "extract", 0, page_count)
+    for number in range(page_count):
+        try:
+            ordered = _page_items(pdf, pdf[number], state)
+        except Exception as exc:  # noqa: BLE001 — page corrompue : signalée, ignorée
+            logger.warning("Page %s illisible : %s", number + 1, exc)
+            ordered = [ocr.UNREADABLE_PAGE]
+        previous = doc.parts[-1] if doc.parts else None
+        if (ordered and isinstance(ordered[0], str) and isinstance(previous, str)
+                and _continues_paragraph(previous, ordered[0])):
+            # Phrase coupée par un saut de page (« né le 10 mai | 1988 ») :
+            # recollée pour que la date / le nom restent détectables.
+            doc.continue_last(ordered.pop(0))
+        doc.section()  # une page = un bloc
+        _append(doc, ordered)
+        report(progress, "extract", number + 1, page_count)
     return doc
 
 
-def process_pdf(content: bytes) -> ProcessedFile:
-    return _anonymize(_pdf_to_doc(content))
+def process_pdf(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
+    pdf = _open_pdf(content)
+    try:
+        # Le PDF reste ouvert pendant l'OCR : les pages y sont rendues à la demande.
+        doc = _pdf_to_doc(pdf, progress)
+        text, found, skipped = _render(doc, progress)
+    finally:
+        pdf.close()
+    return _anonymize(text, found, skipped, progress)
 
 
 # ---------------------------------------------------------------------------
 # Images téléversées
 # ---------------------------------------------------------------------------
+
+def _frame_renderer(img, index: int) -> ImageSource:
+    """Rendu différé d'une page de TIFF multipage (PNG)."""
+
+    def render() -> Optional[bytes]:
+        try:
+            img.seek(index)
+            frame = img if img.mode in ("1", "L", "LA", "P", "RGB", "RGBA") else img.convert("RGB")
+            buffer = io.BytesIO()
+            frame.save(buffer, format="PNG")
+            return buffer.getvalue()
+        except Exception as exc:  # noqa: BLE001 — page endommagée : ignorée
+            logger.warning("Page %s de l'image illisible : %s", index + 1, exc)
+            return None
+
+    return render
+
 
 def _image_to_doc(content: bytes) -> _Doc:
     img = ocr.load_image(content)
@@ -653,48 +785,54 @@ def _image_to_doc(content: bytes) -> _Doc:
     if frames <= 1 or img.format == "GIF":  # GIF animé : la 1re image suffit
         doc.image(_Image(content))
         return doc
-    # TIFF multipage (scan de plusieurs pages) : une image par page.
-    for index, frame in enumerate(ImageSequence.Iterator(img)):
-        if index >= MAX_OCR_PAGES + 1:
-            break
-        if frame.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
-            frame = frame.convert("RGB")
-        buffer = io.BytesIO()
-        frame.save(buffer, format="PNG")
-        doc.image(_Image(buffer.getvalue()))
+    # TIFF multipage (scan de plusieurs pages) : une image par page, rendue
+    # au moment de l'OCR ; une de plus que la limite pour la signaler.
+    for index in range(min(frames, MAX_OCR_PAGES + 1)):
+        doc.image(_Image(_frame_renderer(img, index)))
     return doc
 
 
-def process_image(content: bytes) -> ProcessedFile:
+def process_image(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
     doc = _image_to_doc(content)
-    text, found, skipped = _render(doc)
+    text, found, skipped = _render(doc, progress)
     if not text.strip():
         text = NO_TEXT_IN_IMAGE
-    anonymized = anonymize_text(_clean_text(text))
-    return ProcessedFile(anonymized.encode("utf-8"), ocr_images=found, skipped_images=skipped)
+    return _anonymize(text, found, skipped, progress)
 
 
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
 
-def process_file(filename: str, content: bytes) -> ProcessedFile:
+def process_file(filename: str, content: bytes,
+                 progress: Optional[ProgressCallback] = None) -> ProcessedFile:
     """Convertit puis anonymise un fichier selon son extension.
+
+    Parameters
+    ----------
+    filename : str
+        Nom d'origine (seule l'extension est utilisée).
+    content : bytes
+        Contenu du fichier.
+    progress : callable, optional
+        Suivi d'avancement / annulation, voir ``api.progress``.
 
     Raises
     ------
     FileProcessingError
-        Format non supporté, fichier protégé ou illisible.
+        Format non supporté, fichier protégé, illisible ou trop long.
+    api.progress.Cancelled
+        Levée par ``progress`` pour interrompre le traitement.
     """
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".txt":
-        return process_txt(content)
+        return process_txt(content, progress)
     if ext == ".docx":
-        return process_docx(content)
+        return process_docx(content, progress)
     if ext == ".pdf":
-        return process_pdf(content)
+        return process_pdf(content, progress)
     if ext in IMAGE_EXTENSIONS:
-        return process_image(content)
+        return process_image(content, progress)
     if ext in (".doc", ".odt", ".rtf", ".pages"):
         raise FileProcessingError(
             f"Format {ext} non supporté : enregistrez le document en .docx ou .pdf."

@@ -41,11 +41,16 @@ import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Callable, Optional, Sequence, Union
 
 from PIL import Image, ImageOps
+
+from api import settings
+from api.compute import COMPUTE
+from api.progress import ProgressCallback, report
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +73,12 @@ OCR_UNSUPPORTED = "--- Image non analysée : format d'image non pris en charge -
 OCR_LIMIT_REACHED = "--- Images suivantes non analysées : limite d'OCR atteinte ---"
 """Ligne insérée quand le nombre maximal d'images/pages à lire est atteint."""
 
+UNREADABLE_PAGE = "--- Page illisible (fichier endommagé) : contenu non repris ---"
+"""Ligne insérée à la place d'une page de PDF impossible à lire."""
+
 MARKERS: tuple[str, ...] = (
     OCR_START, OCR_END, OCR_UNAVAILABLE, OCR_UNSUPPORTED, OCR_LIMIT_REACHED,
+    UNREADABLE_PAGE,
 )
 """Lignes techniques à ne jamais anonymiser (voir ``api.nlp_engine``)."""
 
@@ -78,7 +87,7 @@ MARKERS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 _DEFAULT_LANGS = "fra+nld+eng"
-_TIMEOUT = int(os.environ.get("ANON_OCR_TIMEOUT", "90"))
+_TIMEOUT = settings.env_int("ANON_OCR_TIMEOUT", 90, minimum=5)
 _MIN_WORD_CONFIDENCE = 30.0
 """Les mots reconnus avec une confiance inférieure (bruit, dessins, logos
 illisibles) sont écartés."""
@@ -117,7 +126,7 @@ EMPTY_RESULT = OcrResult(text="", confidence=0.0)
 @lru_cache(maxsize=1)
 def tesseract_cmd() -> str | None:
     """Chemin du binaire Tesseract, ou ``None`` s'il est introuvable."""
-    if os.environ.get("ANON_OCR_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
+    if not settings.env_flag("ANON_OCR_ENABLED", True):
         return None
     candidates = [
         os.environ.get("TESSERACT_CMD", ""),
@@ -184,11 +193,7 @@ def status() -> dict:
 
 
 def _workers() -> int:
-    default = max(1, min(4, os.cpu_count() or 1))
-    try:
-        return max(1, int(os.environ.get("ANON_OCR_WORKERS", default)))
-    except ValueError:
-        return default
+    return settings.env_int("ANON_OCR_WORKERS", max(1, min(4, os.cpu_count() or 1)), minimum=1)
 
 
 # Chaque Tesseract est limité à un thread : le parallélisme est géré ici
@@ -201,7 +206,11 @@ _SUBPROCESS_ENV = {**os.environ, "OMP_THREAD_LIMIT": "1"}
 # ---------------------------------------------------------------------------
 
 def load_image(data: bytes) -> Image.Image | None:
-    """Ouvre une image (octets) avec Pillow ; ``None`` si format illisible."""
+    """Ouvre une image (octets) avec Pillow ; ``None`` si format illisible.
+
+    Les images démesurées (> ~179 Mpx, « bombes de décompression ») sont
+    refusées par Pillow et donc traitées comme illisibles.
+    """
     try:
         img = Image.open(io.BytesIO(data))
         if img.format and img.format.upper() not in _SUPPORTED_FORMATS:
@@ -390,16 +399,72 @@ def ocr_png_bytes(data: bytes) -> OcrResult:
     return ocr_image(img) if img is not None else EMPTY_RESULT
 
 
-def ocr_many(images: list[bytes]) -> list[OcrResult]:
-    """Lit plusieurs images en parallèle (ordre des résultats conservé)."""
+def _ocr_shared(data: bytes) -> OcrResult:
+    """OCR d'une image, jamais en même temps qu'une analyse NER (voir ``api.compute``)."""
+    with COMPUTE.shared():
+        return ocr_png_bytes(data)
+
+
+ImageInput = Union[bytes, Callable[[], Optional[bytes]]]
+"""Octets d'une image, ou fonction qui la produit (rendu différé)."""
+
+
+def ocr_many(images: Sequence[ImageInput],
+             progress: Optional[ProgressCallback] = None) -> list[OcrResult]:
+    """Lit plusieurs images en parallèle (ordre des résultats conservé).
+
+    Une image peut être fournie sous forme de fonction (page de PDF à
+    rendre) : elle est appelée dans le thread appelant — le rendu PyMuPDF
+    n'est pas « thread-safe » — juste avant d'être confiée à l'OCR, avec au
+    plus deux images en attente par processus OCR. La mémoire reste ainsi
+    bornée quel que soit le nombre de pages, et le rendu de la page suivante
+    se fait pendant l'OCR des précédentes.
+
+    ``progress("ocr", lues, total)`` est appelé après chaque image. S'il lève
+    une exception (annulation), les images non commencées sont abandonnées
+    et l'exception est propagée.
+    """
     if not images:
         return []
     if not is_available():
         return [EMPTY_RESULT] * len(images)
-    if len(images) == 1:
-        return [ocr_png_bytes(images[0])]
-    with ThreadPoolExecutor(max_workers=min(_workers(), len(images))) as pool:
-        return list(pool.map(ocr_png_bytes, images))
+    total = len(images)
+    workers = min(_workers(), total)
+    max_in_flight = 2 * workers
+    results: list[OcrResult] = [EMPTY_RESULT] * total
+    pending: dict = {}
+    done_count = 0
+    report(progress, "ocr", 0, total)
+
+    def collect(block_until_one: bool) -> None:
+        nonlocal done_count
+        if not pending:
+            return
+        finished, _ = wait(pending, timeout=None if block_until_one else 0,
+                           return_when=FIRST_COMPLETED)
+        for future in finished:
+            results[pending.pop(future)] = future.result()
+            done_count += 1
+        if finished:
+            report(progress, "ocr", done_count, total)
+
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr")
+    try:
+        for index, image in enumerate(images):
+            while len(pending) >= max_in_flight:
+                collect(block_until_one=True)
+            data = image() if callable(image) else image
+            if data is None:
+                done_count += 1  # rendu impossible : aucun texte
+                continue
+            pending[pool.submit(_ocr_shared, data)] = index
+            collect(block_until_one=False)
+        while pending:
+            collect(block_until_one=True)
+    finally:
+        # Annulation : les images en file d'attente ne sont jamais lues.
+        pool.shutdown(wait=True, cancel_futures=True)
+    return results
 
 
 def wrap(text: str) -> str:

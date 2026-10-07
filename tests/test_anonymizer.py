@@ -150,3 +150,135 @@ def test_rotated_image_upload():
     text = process_file("attestation.png", buffer.getvalue()).content.decode("utf-8")
     assert ocr.OCR_START in text
     assert "DELVAUX" not in text and "Louise" not in text
+
+
+# ---------------------------------------------------------------------------
+# Numéros demandés : rôle (RG / FA), registre national (RN / NN), téléphones
+# ---------------------------------------------------------------------------
+
+def test_belgian_numbers_are_removed_but_mentions_kept():
+    result = anonymize_text(
+        "R.G. n° 24/1234/A — Dossier 22/321/FA — Le numéro 2023/789 RG a été joint.\n"
+        "Madame Sophie LAMBERT, RN 85.13.45-123.45, NN 82011512345, "
+        "GSM 0475/12.34.56, tél. (081) 22 33 44, +32471234567, +33 6 12 34 56 78."
+    )
+    for secret in ("24/1234/A", "22/321/FA", "2023/789", "85.13.45", "82011512345",
+                   "0475", "(081)", "+32471234567", "+33 6"):
+        assert secret not in result, secret
+    assert "R.G. n° [NUMÉRO_RÔLE]" in result
+    assert "RN [REGISTRE_NATIONAL]" in result and "NN [REGISTRE_NATIONAL]" in result
+
+
+def test_jurisdiction_seats_stay_readable():
+    result = anonymize_text(
+        "Tribunal de première instance de Liège, division Namur. Maître Paul HENRY, "
+        "avocat au barreau de Bruxelles, pour Monsieur Marc LEROY, domicilié à Namur."
+    )
+    assert "Tribunal de première instance de Liège" in result
+    assert "division Namur" in result and "barreau de Bruxelles" in result
+    assert "domicilié à [LIEU]" in result or "domicilié à Namur" not in result
+    assert "LEROY" not in result and "HENRY" not in result
+
+
+# ---------------------------------------------------------------------------
+# Gros fichiers : progression, annulation, limite de longueur, rendu différé
+# ---------------------------------------------------------------------------
+
+def test_file_progress_stages():
+    pdf = fitz.open()
+    for _ in range(3):
+        pdf.new_page().insert_text((50, 50), "Monsieur Jean DUPONT, GSM 0475/12.34.56")
+    stages = []
+    process_file("dossier.pdf", pdf.tobytes(), progress=lambda s, d, t: stages.append((s, d, t)))
+    assert ("extract", 3, 3) in stages
+    assert stages[-1][0] == "analyze" and stages[-1][1] == stages[-1][2]
+
+
+def test_progress_callback_can_cancel():
+    from api.progress import Cancelled
+
+    def cancel(stage, done, total):
+        raise Cancelled()
+
+    with pytest.raises(Cancelled):
+        process_file("note.txt", "Madame Claire DUBOIS".encode(), progress=cancel)
+
+
+def test_too_long_document_is_refused_early(monkeypatch):
+    from api import settings
+    from api.anonymize_file import DocumentTooLongError
+
+    monkeypatch.setattr(settings, "MAX_TEXT_CHARS", 2_000)
+    pdf = fitz.open()
+    for _ in range(5):
+        pdf.new_page().insert_textbox(fitz.Rect(40, 40, 555, 800), "mot " * 150)
+    pages_read = []
+    with pytest.raises(DocumentTooLongError):
+        process_file("long.pdf", pdf.tobytes(),
+                     progress=lambda s, d, t: s == "extract" and pages_read.append(d))
+    assert max(pages_read) < 5, "la lecture aurait dû s'arrêter dès la limite franchie"
+
+
+def test_ocr_many_renders_lazily_and_keeps_order():
+    calls = []
+
+    def source(i):
+        def render():
+            calls.append(i)
+            return None if i == 1 else text_png([f"Page {i}"], size=(400, 100))
+        return render
+
+    results = ocr.ocr_many([source(i) for i in range(4)])
+    assert calls == [0, 1, 2, 3]  # rendu dans l'ordre, dans le thread appelant
+    assert len(results) == 4 and not results[1].has_text
+    if ocr.is_available():
+        assert "Page 3" in results[3].text
+
+
+@needs_ocr
+def test_scanned_page_caption_is_not_duplicated():
+    pdf = fitz.open()
+    page = pdf.new_page(width=595, height=842)
+    page.insert_text((40, 40), "Annexe photographique 1.", fontsize=11)
+    page.insert_image(fitz.Rect(40, 30, 555, 300), stream=text_png(["Annexe photographique 1."]))
+    result = process_file("annexe.pdf", pdf.tobytes())
+    text = result.content.decode("utf-8")
+    assert result.ocr_images == 0 and ocr.OCR_START not in text
+    assert text.count("Annexe photographique") == 1
+
+
+def test_damaged_pdf_page_does_not_fail_the_document(monkeypatch):
+    import api.anonymize_file as file_module
+
+    original = file_module._page_items
+
+    def flaky(pdf, page, state):
+        if page.number == 1:
+            raise RuntimeError("page endommagée")
+        return original(pdf, page, state)
+
+    monkeypatch.setattr(file_module, "_page_items", flaky)
+    pdf = fitz.open()
+    for name in ("Monsieur Jean DUPONT", "Madame Claire DUBOIS", "Monsieur Paul HENRY"):
+        pdf.new_page().insert_text((50, 50), name)
+    text = process_file("dossier.pdf", pdf.tobytes()).content.decode("utf-8")
+    assert ocr.UNREADABLE_PAGE in text  # signalée telle quelle (marqueur protégé)
+    assert text.count("[PERSONNE_") == 2 and "DUPONT" not in text and "HENRY" not in text
+
+
+@pytest.mark.parametrize("before, expected", [
+    ("Tribunal de première instance de ", True),
+    ("Liège, division ", True),
+    ("Cour d’appel de ", True),
+    ("Justice de paix du canton de ", True),
+    ("Conseil de prud'hommes de ", True),
+    ("avocat au barreau de ", True),
+    ("domicilié à ", False),
+    ("le tribunal a constaté qu'il habite près de ", False),
+    ("les hommes de ", False),
+    ("commune de ", False),
+])
+def test_jurisdiction_seat_detection(before, expected):
+    from api.nlp_engine import _is_jurisdiction_seat
+
+    assert _is_jurisdiction_seat(before + "Liège", len(before)) is expected

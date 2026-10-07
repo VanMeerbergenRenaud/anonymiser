@@ -8,7 +8,12 @@ Spécialisés pour les documents juridiques **belges** et **français** :
 - NIR français (n° de sécurité sociale, clé vérifiée) ;
 - IBAN de tous pays (longueur + clé), anciens n° de compte belges ;
 - numéros d'entreprise BCE/KBO et TVA belges, TVA/SIRET/SIREN français ;
-- téléphones belges / français / internationaux ;
+- numéros de rôle (« R.G. n° 24/1234/A », « 2024/FA/123 », « 21/456 FA »…)
+  et références de dossier (répertoire, notice du parquet, Portalis, PV) ;
+- numéro de registre national annoncé par « RN », « NN », « NISS »… quel
+  que soit son format (même avec une faute de frappe) ;
+- téléphones belges / français / internationaux (« 0475/12.34.56 »,
+  « (081) 22 33 44 », « +32 (0)2 512 34 56 », « +33612345678 »…) ;
 - adresses postales (« Rue Petit Bioleux 18, 4120 Neupré », « 24 rue des
   Acacias, 69003 Lyon », « Kerkstraat 12 bus 3, 9000 Gent »…) ;
 - noms de personnes introduits par une civilité ou une fonction
@@ -268,8 +273,34 @@ def _validate_be_national_number(m: re.Match, text: str, score: float) -> Option
 
 
 _BE_NN_RE = re.compile(
-    r"(?<![\d.,/-])(?P<yy>\d{2})(?P<sep>[. -]?)(?P<mm>\d{2})(?P=sep)(?P<dd>\d{2})"
+    r"(?<![\d.,/+-])(?P<yy>\d{2})(?P<sep>[. -]?)(?P<mm>\d{2})(?P=sep)(?P<dd>\d{2})"
     r"[. -]?(?P<seq>\d{3})[. -]?(?P<cc>\d{2})(?![\d])"
+)
+
+# Numéro annoncé explicitement (« RN 85.07.30-033.28 », « NN : 85073003328 »,
+# « 85073003328 (RN) ») : masqué quel que soit son format ou sa clé — une
+# faute de frappe dans le numéro ne doit jamais le faire fuiter.
+_NN_MENTION = (
+    r"(?<![\w.])(?:R\.[ \t]?N\.?|RN|N\.[ \t]?N\.?|NN|NISS|INSZ|RRN)(?![\w])"
+)
+_NN_LABEL = (
+    rf"{_NN_MENTION}"
+    r"|(?<![\w])(?i:(?:num[ée]ro|n[°ºo˚])\.?[ \t]+(?:(?:de|du)[ \t]+)?(?:registre[ \t]+national|national|BIS)"
+    r"|registre[ \t]+national|rijksregister(?:nummer|nr)?"
+    r"|identificatienummer(?:[ \t]+van[ \t]+het[ \t]+rijksregister)?"
+    r"|num[ée]ro[ \t]+d['’]identification(?:[ \t]+(?:au|du)[ \t]+registre[ \t]+national)?)(?![\w])"
+)
+_NN_VALUE = (
+    r"\d{2}[ .\-/]?\d{2}[ .\-/]?\d{2}[ .\-/]?\d{3}[ .\-/]?\d{2}(?![\d])"
+    r"|\d(?:[ .\-/]?\d){8,12}(?![\d])"
+)
+"""9 à 13 chiffres (11 attendus) : tolère un chiffre en trop ou en moins."""
+
+_NN_MENTION_BEFORE_RE = re.compile(
+    rf"(?:{_NN_LABEL})[^\d\n]{{0,25}}?(?P<num>{_NN_VALUE})"
+)
+_NN_MENTION_AFTER_RE = re.compile(
+    rf"(?<![\d.,/-])(?P<num>{_NN_VALUE})(?=[ \t]*\(?[ \t]*(?:{_NN_MENTION}))"
 )
 
 
@@ -342,13 +373,18 @@ _BCE_CONTEXT = _ctx(
 _VAT_CONTEXT = re.compile(r"(?i)(?:TVA|BTW|VAT)\W{0,15}$")
 
 
+def _is_valid_bce(digits: str) -> bool:
+    """Clé modulo 97 d'un numéro d'entreprise belge (10 chiffres)."""
+    return len(digits) == 10 and 97 - int(digits[:8]) % 97 == int(digits[8:])
+
+
 def _validate_be_enterprise(m: re.Match, text: str, score: float) -> Optional[Match]:
     digits = _digits(m.group("num"))
     if len(digits) == 9:
         digits = "0" + digits
     if len(digits) != 10:
         return None
-    valid = 97 - int(digits[:8]) % 97 == int(digits[8:])
+    valid = _is_valid_bce(digits)
     has_prefix = bool(m.group("prefix"))
     formatted = "." in m.group("num") or " " in m.group("num")
     if valid and (has_prefix or formatted):
@@ -393,6 +429,9 @@ _PHONE_CONTEXT = _ctx(
 )
 
 
+_BCE_LIKE_RE = re.compile(r"[01]\d{3}\.\d{3}\.\d{3}")
+
+
 def _validate_phone(m: re.Match, text: str, score: float) -> Optional[Match]:
     raw = m.group(0)
     digits = _digits(re.sub(r"\(0\)", "", raw))
@@ -405,17 +444,107 @@ def _validate_phone(m: re.Match, text: str, score: float) -> Optional[Match]:
         return Match(m.start(), m.end(), 0.85)
     if len(digits) not in (9, 10):
         return None
+    # « 0123.456.749 » : numéro d'entreprise (BCE) valide, pas un téléphone.
+    if _BCE_LIKE_RE.fullmatch(raw) and _is_valid_bce(digits):
+        return None
     return Match(m.start(), m.end(), score)
 
 
+# Pas de détection au milieu d'un nombre (« 1.0475… », « 12/0475… »), mais
+# bien après une abréviation collée (« tél.0475 12 34 56 »).
+_PHONE_BEFORE = r"(?<![\w+/,-])(?<!\d\.)"
 _PHONE_NATIONAL_RE = re.compile(
-    rf"(?<![\w+/.,-])0\d{{1,3}}(?!\d)(?:{_PHONE_SEP}\d{{2,3}}(?!\d)){{2,4}}(?![./-]?\d)"
+    rf"{_PHONE_BEFORE}0\d{{1,3}}(?!\d)(?:{_PHONE_SEP}\d{{2,3}}(?!\d)){{2,4}}(?![./-]?\d)"
 )
-_PHONE_NATIONAL_COMPACT_RE = re.compile(r"(?<![\w+/.,-])0[1-9]\d{7,8}(?![\w])")
+_PHONE_NATIONAL_COMPACT_RE = re.compile(rf"{_PHONE_BEFORE}0[1-9]\d{{7,8}}(?![\w])")
+_PHONE_AREA_CODE_RE = re.compile(
+    # Indicatif de zone entre parenthèses : « (081) 22 33 44 », « (02) 512.34.56 ».
+    rf"{_PHONE_BEFORE}\(0\d{{1,3}}\)[ \t]?\d{{2,4}}(?:{_PHONE_SEP}\d{{2,3}}(?!\d)){{1,3}}(?![./-]?\d)"
+)
 _PHONE_INTL_RE = re.compile(
     r"(?<![\w+])(?:\+|00)[1-9]\d{0,2}[ \t]?(?:\(0\)[ \t]?)?"
     rf"\d{{1,4}}(?:{_PHONE_SEP}\d{{1,4}}(?!\d)){{1,5}}(?![\d])"
 )
+_PHONE_INTL_COMPACT_RE = re.compile(
+    # « +32471234567 », « 0033612345678 » (sans séparateur). Avec « 00 »,
+    # seulement les indicatifs européens / maghrébins courants : une longue
+    # suite de chiffres commençant par 00 est sinon souvent une référence.
+    r"(?<![\w+])(?:\+[1-9]\d{8,14}"
+    r"|00(?:32|33|31|352|49|41|44|39|34|351|377|212|213|216|90|48|40)\d{7,12})(?![\d])"
+)
+
+# ---------------------------------------------------------------------------
+# Numéros de rôle (RG / FA) et références de dossier
+# ---------------------------------------------------------------------------
+#
+# Un numéro de rôle identifie l'affaire, donc les parties : tout numéro
+# placé juste avant ou juste après la mention « RG » / « FA » est masqué.
+# La mention elle-même reste lisible (« R.G. n° [NUMÉRO_RÔLE] »), sauf
+# quand elle est soudée au numéro (« 2024/FA/123 » → « [NUMÉRO_RÔLE] »).
+
+_REF_SEP = r"(?:[ \t]?/[ \t]?|[.\-])"
+_REF = (
+    rf"(?:[A-Z]{{1,4}}{_REF_SEP})*\d[A-Z0-9]{{0,9}}"
+    rf"(?:{_REF_SEP}[A-Z0-9]{{1,10}}){{0,6}}(?![\w])"
+)
+"""Référence : segments séparés par « / », « . » ou « - » (« 24/1234/A »,
+« 2023/AL/123 », « C/21/00123 », « LI.55.L1.012345/2023 »)."""
+
+_REF_SHAPED = (
+    rf"(?:[A-Z]{{1,4}}{_REF_SEP})*\d[A-Z0-9]{{0,9}}"
+    rf"(?:{_REF_SEP}[A-Z0-9]{{1,10}}){{1,6}}(?![\w])"
+)
+"""Référence à au moins deux segments : seule admise dans une liste ou
+devant « RG » (« 2023/789 RG »), pour ne pas masquer une heure ou un
+nombre isolé (« RG 21/123 à 14 h »)."""
+
+_REF_LIST = rf"{_REF}(?:[ \t]*(?:[,;&–—-]|et|à)[ \t]*{_REF_SHAPED})*"
+_REF_GLUE = (
+    r"[ \t]*(?:[:.][ \t]*)?"
+    r"(?:(?i:n[°ºo˚]s?|nrs?|nos?|num[ée]ros?)\.?[ \t]*)?(?:[:][ \t]*)?"
+)
+"""Entre la mention et le numéro : « R.G. n° », « RG : », « RG n°s »…"""
+
+_ROLE_MENTION = r"(?<![\w.])(?:R\.[ \t]?G\.?|RG|F\.[ \t]?A\.?|FA)(?![\w])"
+_ROLE_LABEL = (
+    rf"{_ROLE_MENTION}"
+    r"|(?<![\w])(?i:(?:num[ée]ro|n[°ºo˚]|nr)\.?[ \t]+(?:(?:de|du)[ \t]+)?r[ôo]le(?:[ \t]+g[ée]n[ée]ral)?"
+    r"|r[ôo]le[ \t]+g[ée]n[ée]ral|r[ôo]le(?=[ \t]+n[°ºo˚])|rolnummer|algemene[ \t]+rol)(?![\w])"
+)
+_ROLE_BEFORE_RE = re.compile(rf"(?:{_ROLE_LABEL}){_REF_GLUE}(?P<num>{_REF_LIST})")
+_ROLE_AFTER_RE = re.compile(
+    rf"(?<![\w/.-])(?P<num>{_REF_SHAPED})(?=[ \t]*\(?[ \t]*(?:{_ROLE_MENTION}))"
+)
+_ROLE_GLUED_RE = re.compile(
+    # « 22/321/FA », « 2024/FA/123 », « FA/2021/123 »
+    r"(?<![\w/.-])(?P<num>(?:[A-Z0-9]{1,10}/)*(?:FA|RG)(?:/[A-Z0-9]{1,10})+"
+    r"|(?:[A-Z0-9]{1,10}/)+(?:FA|RG))(?![\w/])"
+)
+
+_CASE_REF_LABEL = (
+    r"(?<![\w])(?:R[ée]p\.|(?i:r[ée]pertoire)(?:[ \t]+(?i:g[ée]n[ée]ral))?"
+    r"|(?i:notice(?:[ \t]+(?:du[ \t]+)?parquet)?|not\.[ \t]*parq\.?|n[°ºo˚][ \t]*(?:de[ \t]+)?notice)"
+    r"|PV|P\.V\.|(?i:proc[èe]s[- ]verbal))(?![\w])"
+)
+_CASE_REF_RE = re.compile(rf"(?:{_CASE_REF_LABEL}){_REF_GLUE}(?P<num>{_REF_LIST})")
+_PORTALIS_RE = re.compile(
+    r"(?i:portalis)[ \t]*(?:n[°ºo˚]\.?[ \t]*)?:?[ \t]*(?P<num>[A-Z0-9]{2,6}(?:-[A-Z0-9]{1,6}){2,5})(?![\w-])"
+)
+
+
+def _reference_validator(min_digits: int = 2) -> Validator:
+    """Valide le groupe ``num`` s'il contient assez de chiffres (« RG A » ou
+    « RN 4 » ne sont pas des numéros)."""
+    def _validate(m: re.Match, text: str, score: float) -> Optional[Match]:
+        start, end = m.span("num")
+        if sum(ch.isdigit() for ch in text[start:end]) < min_digits:
+            return None
+        return Match(start, end, score)
+    return _validate
+
+
+_validate_reference = _reference_validator()
+
 
 # ---------------------------------------------------------------------------
 # Adresses postales
@@ -654,14 +783,26 @@ def _field(labels: str) -> re.Pattern:
     return re.compile(rf"(?im){_FIELD_PREFIX}(?:{labels})\.?{_FIELD_VALUE}")
 
 
+_PHONE_VALUE_RE = re.compile(r"[ \t]*(?:\+|\(0)?\d[\d \t./()\-]*\d")
+"""Numéro en tête d'un champ « Tél. : … » (s'arrête au premier mot)."""
+
+
 def _field_validator(min_alnum: int = 2, need_digits: int = 0,
-                     person: bool = False) -> Validator:
+                     person: bool = False, phone: bool = False) -> Validator:
     def _validate(m: re.Match, text: str, score: float) -> Optional[Match]:
         start, end = m.span("value")
         value = text[start:end]
         cut = _LABEL_CUT_RE.search(value)
         if cut:
             end = start + cut.start()
+            value = text[start:end]
+        if phone:
+            # « GSM : 0475/12.34.56 — fax 081/22.33.45 » : seul le premier
+            # numéro appartient au champ (le second est détecté seul).
+            number = _PHONE_VALUE_RE.match(value)
+            if number is None:
+                return None
+            end = start + number.end()
             value = text[start:end]
         stripped = value.rstrip(" \t.,;:")
         if stripped.endswith(")") and "(" not in stripped:
@@ -769,14 +910,23 @@ def _build_rules() -> list[Rule]:
              context=_ctx(r"siret", r"rcs", r"immatricul\w*", r"[ée]tablissement", r"si[èe]ge")),
         Rule("FR_SIREN", re.compile(r"(?<![\d.])\d{3}[ \t]\d{3}[ \t]\d{3}(?![\d])|(?<![\d.])\d{9}(?![\d])"), 0.35,
              context=_ctx(r"siren", r"rcs", r"immatricul\w*", r"soci[ée]t[ée]", r"registre", r"num[ée]ro")),
-        Rule("FR_NUM_ROLE", re.compile(r"(?<![\w/])[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*/FA(?![\w])"), 0.9),
+        Rule("BE_NATIONAL_NUMBER", _NN_MENTION_BEFORE_RE, 0.95, validator=_validate_reference),
+        Rule("BE_NATIONAL_NUMBER", _NN_MENTION_AFTER_RE, 0.95, validator=_validate_reference),
+        # --- Numéros de rôle et références de dossier ---------------------------
+        Rule("FR_NUM_ROLE", _ROLE_BEFORE_RE, 0.95, validator=_validate_reference),
+        Rule("FR_NUM_ROLE", _ROLE_AFTER_RE, 0.9, validator=_validate_reference),
+        Rule("FR_NUM_ROLE", _ROLE_GLUED_RE, 0.9, validator=_validate_reference),
+        Rule("CASE_REFERENCE", _CASE_REF_RE, 0.85, validator=_validate_reference),
+        Rule("CASE_REFERENCE", _PORTALIS_RE, 0.9, validator=_reference_validator(min_digits=1)),
         # --- Coordonnées ------------------------------------------------------
         Rule("EMAIL_ADDRESS", _EMAIL_RE, 1.0),
         Rule("PHONE_NUMBER", _PHONE_NATIONAL_RE, 0.75, validator=_validate_phone,
              context=_PHONE_CONTEXT, context_boost=0.2),
         Rule("PHONE_NUMBER", _PHONE_NATIONAL_COMPACT_RE, 0.55, validator=_validate_phone,
              context=_PHONE_CONTEXT, context_boost=0.35),
+        Rule("PHONE_NUMBER", _PHONE_AREA_CODE_RE, 0.8, validator=_validate_phone),
         Rule("PHONE_NUMBER", _PHONE_INTL_RE, 0.85, validator=_validate_phone),
+        Rule("PHONE_NUMBER", _PHONE_INTL_COMPACT_RE, 0.85, validator=_validate_phone),
         # --- Adresses ---------------------------------------------------------
         Rule("ADDRESS", _ADDRESS_FR_RE, 0.85, validator=_validate_address),
         Rule("ADDRESS", _ADDRESS_BE_RE, 0.85, validator=_validate_address),
@@ -806,7 +956,7 @@ def _build_rules() -> list[Rule]:
         Rule("BE_ID_CARD", _ID_FIELD_RE, 0.9, group="value",
              validator=_field_validator(min_alnum=5, need_digits=3)),
         Rule("PHONE_NUMBER", _PHONE_FIELD_RE, 0.85, group="value",
-             validator=_field_validator(min_alnum=8, need_digits=8)),
+             validator=_field_validator(min_alnum=8, need_digits=8, phone=True)),
         # --- Véhicules --------------------------------------------------------
         Rule("LICENSE_PLATE", re.compile(r"(?<![\w-])[1-9]-[A-Z]{3}-\d{3}(?![\w-])"), 0.8),
         Rule("LICENSE_PLATE", re.compile(r"(?<![\w-])[A-Z]{2}-\d{3}-[A-Z]{2}(?![\w-])"), 0.75),
