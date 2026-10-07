@@ -1082,8 +1082,9 @@ def _read_layouts(pdf, state: _PdfState, progress: Optional[ProgressCallback]) -
             zone = None if row.blank else _margin_zone(row, layout)
             if zone is None:
                 continue
-            if _PAGE_NUMBER_RE.fullmatch(row.text.strip()):
-                state.margin_drop.add((number, index))
+            page_number = _PAGE_NUMBER_RE.fullmatch(row.text.strip())
+            if page_number and int(re.search(r"\d+", page_number.group(0)).group(0)) <= page_count:
+                state.margin_drop.add((number, index))  # numéro de page
                 continue
             key = _margin_key(row.text)
             pages_by_key.setdefault(key, set()).add(number)

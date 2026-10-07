@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Corpus d'évaluation : documents binaires, jamais convertis
+tests/corpus/documents/*.pdf binary
+tests/corpus/documents/*.docx binary
+tests/corpus/documents/*.png binary

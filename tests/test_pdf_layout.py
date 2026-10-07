@@ -159,3 +159,11 @@ def test_words_split_into_fragments_are_not_glued():
         x += fitz.get_text_length(word + " ", fontsize=11)
     text = extract_text("collé.pdf", pdf.tobytes())
     assert text == "la requête déposée au greffe le 4 octobre."
+
+
+def test_a_year_alone_in_the_margin_is_not_a_page_number():
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text((72, 100), "Rapport annuel de la commission.", fontsize=11)
+    page.insert_text((280, 800), "2024", fontsize=11)
+    assert "2024" in extract_text("rapport.pdf", pdf.tobytes())
