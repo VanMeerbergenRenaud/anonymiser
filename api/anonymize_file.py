@@ -345,6 +345,152 @@ _V_IMAGEDATA = _q("v", "imagedata")
 _MC_FALLBACK = _q("mc", "Fallback")
 _R_EMBED, _R_ID = _q("r", "embed"), _q("r", "id")
 _W_TYPE = _q("w", "type")
+_W_VAL = _q("w", "val")
+
+
+# --- Numérotation automatique (listes « 1. », « a) », puces) ----------------
+
+_ROMAN = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+          (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
+
+
+def _format_number(n: int, fmt: str) -> str:
+    """Numéro de liste Word dans le format ``w:numFmt`` donné."""
+    if fmt in ("none", "bullet"):
+        return ""
+    if fmt in ("lowerLetter", "upperLetter"):
+        letters = ""
+        while n > 0:
+            n, rest = divmod(n - 1, 26)
+            letters = chr(ord("a") + rest) + letters
+        return letters if fmt == "lowerLetter" else letters.upper()
+    if fmt in ("lowerRoman", "upperRoman"):
+        roman = ""
+        for value, digits in _ROMAN:
+            while n >= value:
+                roman += digits
+                n -= value
+        return roman if fmt == "upperRoman" else roman.lower()
+    if fmt == "decimalZero":
+        return f"{n:02d}"
+    if fmt == "ordinal":
+        return f"{n}er" if n == 1 else f"{n}e"
+    return str(n)
+
+
+def _bullet(symbol: str) -> str:
+    """Puce Word → caractère lisible (les polices Symbol / Wingdings utilisent
+    la zone d'usage privé : «  » est une puce ronde)."""
+    if not symbol or any(0xE000 <= ord(ch) <= 0xF8FF for ch in symbol):
+        return "•"
+    return "◦" if symbol == "o" else symbol
+
+
+class _Numbering:
+    """Numéros des paragraphes de listes Word (``w:numPr`` direct ou hérité
+    du style) : ils ne figurent pas dans le texte et étaient perdus."""
+
+    def __init__(self, document) -> None:
+        self.levels: dict[tuple[str, int], tuple[str, str, int]] = {}
+        self.abstract: dict[str, str] = {}
+        self.restart: dict[str, dict[int, int]] = {}
+        self.style_numbering: dict[str, tuple[str, Optional[int]]] = {}
+        self.counters: dict[str, dict[int, int]] = {}
+        self.started: set[str] = set()
+        try:
+            root = document.part.numbering_part.element
+        except (KeyError, NotImplementedError, AttributeError):
+            root = None
+        if root is not None:
+            abstract_levels: dict[str, dict[int, tuple[str, str, int]]] = {}
+            for abstract in root.iter(_q("w", "abstractNum")):
+                levels = abstract_levels.setdefault(abstract.get(_q("w", "abstractNumId")), {})
+                for lvl in abstract.findall(_q("w", "lvl")):
+                    levels[int(lvl.get(_q("w", "ilvl"), "0"))] = (
+                        self._val(lvl, "numFmt", "decimal"), self._val(lvl, "lvlText", ""),
+                        int(self._val(lvl, "start", "1") or 1),
+                    )
+            for num in root.iter(_q("w", "num")):
+                num_id = num.get(_q("w", "numId"))
+                abstract_id = self._val(num, "abstractNumId", "")
+                self.abstract[num_id] = abstract_id
+                for ilvl, level in abstract_levels.get(abstract_id, {}).items():
+                    self.levels[(num_id, ilvl)] = level
+                for override in num.findall(_q("w", "lvlOverride")):
+                    start = override.find(_q("w", "startOverride"))
+                    if start is not None:
+                        self.restart.setdefault(num_id, {})[
+                            int(override.get(_q("w", "ilvl"), "0"))] = int(start.get(_W_VAL, "1"))
+        try:
+            styles = document.styles.element
+        except AttributeError:
+            styles = None
+        if styles is not None:
+            raw: dict[str, tuple[Optional[str], Optional[int], Optional[str]]] = {}
+            for style in styles.iter(_q("w", "style")):
+                num_pr = style.find(f"{_q('w', 'pPr')}/{_q('w', 'numPr')}")
+                num_id = ilvl = None
+                if num_pr is not None:
+                    num_id = self._val(num_pr, "numId", None)
+                    level = self._val(num_pr, "ilvl", None)
+                    ilvl = int(level) if level is not None else None
+                based_on = self._val(style, "basedOn", None)
+                raw[style.get(_q("w", "styleId"))] = (num_id, ilvl, based_on)
+            for style_id in raw:
+                seen, current = set(), style_id
+                while current in raw and current not in seen:
+                    seen.add(current)
+                    num_id, ilvl, based_on = raw[current]
+                    if num_id is not None:
+                        self.style_numbering[style_id] = (num_id, ilvl)
+                        break
+                    current = based_on
+
+    @staticmethod
+    def _val(element, tag: str, default):
+        child = element.find(_q("w", tag))
+        return child.get(_W_VAL, default) if child is not None else default
+
+    def label(self, p) -> str:
+        """Numéro (« 2. », « b) », « • ») du paragraphe ``p``, ou ""."""
+        ppr = p.find(_q("w", "pPr"))
+        num_id = ilvl = None
+        if ppr is not None:
+            num_pr = ppr.find(_q("w", "numPr"))
+            if num_pr is not None:
+                num_id = self._val(num_pr, "numId", None)
+                level = self._val(num_pr, "ilvl", None)
+                ilvl = int(level) if level is not None else None
+            if num_id is None:
+                style = self._val(ppr, "pStyle", None)
+                if style in self.style_numbering:
+                    num_id, style_level = self.style_numbering[style]
+                    ilvl = ilvl if ilvl is not None else style_level
+        if not num_id or num_id == "0":
+            return ""
+        ilvl = ilvl or 0
+        level = self.levels.get((num_id, ilvl))
+        if level is None:
+            return ""
+        fmt, text, start = level
+        if fmt == "bullet":
+            return _bullet(text)
+        key = self.abstract.get(num_id, num_id)
+        counters = self.counters.setdefault(key, {})
+        if num_id not in self.started and num_id in self.restart:
+            for lvl, value in self.restart[num_id].items():
+                counters[lvl] = value - 1
+        self.started.add(num_id)
+        counters[ilvl] = counters.get(ilvl, start - 1) + 1
+        for deeper in [lvl for lvl in counters if lvl > ilvl]:
+            del counters[deeper]  # sous-niveaux : recommencent à leur début
+
+        def number(match: re.Match) -> str:
+            lvl = int(match.group(1)) - 1
+            lvl_fmt, _, lvl_start = self.levels.get((num_id, lvl), ("decimal", "", 1))
+            return _format_number(counters.get(lvl, lvl_start), lvl_fmt)
+
+        return re.sub(r"%(\d)", number, text).strip()
 
 
 class _DocxReader:
@@ -353,6 +499,7 @@ class _DocxReader:
     def __init__(self, document) -> None:
         self.document = document
         self.seen_images: set[str] = set()
+        self.numbering = _Numbering(document)
 
     # --- Images -------------------------------------------------------------
 
@@ -420,7 +567,9 @@ class _DocxReader:
                     visit(c)
 
         visit(p)
-        doc.text("".join(texts))
+        text = "".join(texts)
+        label = self.numbering.label(p) if text.strip() else ""
+        doc.text(f"{label} {text.lstrip()}" if label else text)
         for box in nested:
             self.blocks(box, part, doc)
         for data in images:

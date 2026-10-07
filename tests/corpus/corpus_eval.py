@@ -203,6 +203,10 @@ def word_fidelity(source: list[str], extracted: str,
             lost[a] -= 1
             lost[b] -= 1
             extra[joined] -= 1
+    # Numéros de liste restitués (numérotation automatique Word : « 1. », « a) »).
+    for piece in list(extra):
+        if re.fullmatch(r"\d{1,3}|[a-zA-Z]", piece):
+            del extra[piece]
     return sorted((+lost).elements()), sorted((+extra).elements())
 
 

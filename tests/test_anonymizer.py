@@ -303,3 +303,53 @@ def test_identifiers_are_masked_wherever_they_reappear():
         "sur la pièce 3."
     )
     assert "85.07.30-033.28" not in result
+
+
+def test_docx_automatic_numbering_and_bullets_are_kept():
+    """Listes numérotées automatiquement par Word : le numéro n'est pas dans le
+    texte du paragraphe (w:numPr) et était perdu."""
+    from api.anonymize_file import extract_text
+
+    doc = Document()
+    doc.add_paragraph("Les faits", style="List Number")
+    doc.add_paragraph("La procédure", style="List Number")
+    doc.add_paragraph("un premier point", style="List Bullet")
+    doc.add_paragraph("En droit", style="List Number")
+    table = doc.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].paragraphs[0].style = doc.styles["List Number"]
+    table.rows[0].cells[0].paragraphs[0].text = "dans un tableau"
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    lines = extract_text("conclusions.docx", buffer.getvalue()).splitlines()
+    assert lines[:4] == ["1. Les faits", "2. La procédure", "• un premier point", "3. En droit"]
+    assert lines[4] == "4. dans un tableau"
+
+
+def test_docx_numbering_formats():
+    from api.anonymize_file import _format_number
+
+    assert [_format_number(n, "lowerLetter") for n in (1, 2, 27)] == ["a", "b", "aa"]
+    assert [_format_number(n, "upperRoman") for n in (1, 4, 9, 14)] == ["I", "IV", "IX", "XIV"]
+    assert _format_number(3, "decimalZero") == "03"
+    assert _format_number(5, "none") == ""
+
+
+def test_blocklist_matches_whole_words_only():
+    from api.nlp_engine import analyze_text_detailed
+
+    result = analyze_text_detailed("Le dossier Dupont et la société Duponteau.", blocklist=["Dupont"])
+    blocked = [d["value"] for d in result["detections"] if d["type"] == "CUSTOM"]
+    assert blocked == ["Dupont"]
+
+
+def test_whitelist_does_not_unmask_a_longer_name():
+    """Liste blanche « Dupont » : « Jean Dupont » ne doit pas devenir lisible en
+    entier (« Jean » fuirait) ; seul un nom identique au terme est conservé."""
+    from api.nlp_engine import analyze_text_detailed
+
+    result = analyze_text_detailed("Monsieur Jean DUPONT a signé. Monsieur MARTIN aussi.",
+                                   whitelist=["Martin"])
+    values = [d["value"] for d in result["detections"]]
+    assert "Jean DUPONT" in values and "MARTIN" not in values
+    result = analyze_text_detailed("Monsieur Jean DUPONT a signé.", whitelist=["Dupont"])
+    assert any("Jean" in d["value"] for d in result["detections"])

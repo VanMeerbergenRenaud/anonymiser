@@ -34,7 +34,8 @@ fichier ``.txt`` (usage scripts / API).
 Confidentialité
 ---------------
 Les messages d'erreur renvoyés ne contiennent jamais de détail interne
-(exceptions Python), qui pourrait inclure un extrait du document.
+(exceptions Python), qui pourrait inclure un extrait du document ; les
+journaux n'en conservent que le type et l'emplacement (fichier, ligne).
 """
 
 from __future__ import annotations
@@ -44,8 +45,10 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
+import traceback
 import unicodedata
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
@@ -98,6 +101,19 @@ _JOB_SLOTS = threading.BoundedSemaphore(settings.MAX_PARALLEL_JOBS)
 
 def _error(message: str, status: int) -> tuple[Response, int]:
     return jsonify({"error": message}), status
+
+
+def _log_internal_error(context: str) -> None:
+    """Journalise l'erreur en cours sans son message.
+
+    Le message d'une exception peut contenir un extrait du document
+    (« impossible de traiter « Jean DUPONT » ») : seuls le type d'erreur et
+    les fichiers / lignes en cause sont écrits, ce qui suffit au diagnostic.
+    """
+    exc_type, _exc, tb = sys.exc_info()
+    frames = traceback.extract_tb(tb)[-6:]
+    where = " < ".join(f"{os.path.basename(f.filename)}:{f.lineno} ({f.name})" for f in reversed(frames))
+    logger.error("%s : %s [%s]", context, getattr(exc_type, "__name__", "Exception"), where)
 
 
 @contextmanager
@@ -159,7 +175,7 @@ def anonymize_text():
     try:
         return jsonify({"anonymized": text_module.anonymize_text(text)})
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors de l'anonymisation d'un texte")
+        _log_internal_error("Erreur lors de l'anonymisation d'un texte")
         return _error("Erreur interne lors de l'anonymisation.", 500)
 
 
@@ -181,7 +197,7 @@ def analyze_text_detailed():
         )
         return jsonify(result)
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors de l'analyse d'un texte")
+        _log_internal_error("Erreur lors de l'analyse d'un texte")
         return _error("Erreur interne lors de l'analyse.", 500)
 
 
@@ -267,7 +283,7 @@ def _stream_job(filename: str, content: bytes, output_name: str) -> Response:
         except file_module.FileProcessingError as exc:
             events.put({"event": "error", "status": exc.status, "error": str(exc)})
         except Exception:  # noqa: BLE001
-            logger.exception("Erreur lors du traitement d'un fichier")
+            _log_internal_error("Erreur lors du traitement d'un fichier")
             events.put({"event": "error", "status": 500,
                         "error": "Erreur interne lors du traitement du fichier."})
         finally:
@@ -339,7 +355,7 @@ def anonymize_file():
     except file_module.FileProcessingError as exc:
         return _error(str(exc), exc.status)
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors du traitement d'un fichier")
+        _log_internal_error("Erreur lors du traitement d'un fichier")
         return _error("Erreur interne lors du traitement du fichier.", 500)
     return _file_response(result, output_name)
 

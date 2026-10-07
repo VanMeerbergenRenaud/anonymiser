@@ -330,9 +330,18 @@ règles : les désactiver accélère l'analyse sans changer les détections. Le
 NER spaCy de ``fr_core_news_md`` possède son propre ``tok2vec`` interne."""
 
 # Annotations CamemBERT tombant à l'intérieur d'un seul mot spaCy (fragments
-# d'e-mails, d'URL — déjà masqués par les règles) : bruit sans conséquence
-# qui inonderait les logs à chaque document.
-warnings.filterwarnings("ignore", message=r"Skipping annotation, .* is overlapping")
+# d'e-mails, d'URL — déjà masqués par les règles) : bruit sans conséquence.
+# Surtout, ces avertissements citent l'entité et le début du texte analysé :
+# tous ceux du module sont écartés, quel que soit leur libellé (aucun
+# contenu de document dans les journaux).
+def _silence_library_warnings() -> None:
+    """Installe les filtres (idempotent) : rappelé avant chaque analyse, au cas
+    où un ``warnings.catch_warnings`` les aurait retirés entre-temps."""
+    warnings.filterwarnings("ignore", message=r"Skipping annotation")
+    warnings.filterwarnings("ignore", module=r"spacy_huggingface_pipelines")
+
+
+_silence_library_warnings()
 
 
 def _prune_pipelines(nlp_engine: NlpEngine) -> None:
@@ -634,6 +643,7 @@ def _raw_detections(text: str, progress: Optional[ProgressCallback] = None) -> l
     detections: list[Detection] = []
     total = len(text)
     report(progress, "analyze", 0, total)
+    _silence_library_warnings()
     for offset, chunk in _chunks(text):
         if chunk.strip():
             with COMPUTE.exclusive():
@@ -1228,14 +1238,20 @@ def _normalize(s: str) -> str:
 
 def _apply_whitelist(text: str, detections: list[Detection],
                      whitelist: list[str] | None) -> list[Detection]:
-    """Retire les détections correspondant à un terme de la liste blanche."""
-    terms = [_normalize(w) for w in (whitelist or []) if w.strip()]
+    """Retire les détections qui sont un terme de la liste blanche, ou un mot
+    entier d'un tel terme (« Cour » pour « Cour de cassation »).
+
+    Une détection plus longue que le terme reste masquée : avec « Dupont » en
+    liste blanche, « Jean Dupont » ne devient pas lisible (« Jean » fuirait).
+    """
+    terms = {_normalize(w) for w in (whitelist or []) if w.strip()}
     if not terms:
         return detections
     kept = []
     for d in detections:
-        val = _normalize(text[d.start:d.end])
-        if any(t in val or val in t for t in terms):
+        value = _normalize(text[d.start:d.end])
+        word = re.compile(rf"(?<![\w]){re.escape(value)}(?![\w])")
+        if value in terms or any(word.search(term) for term in terms):
             continue  # à garder en clair
         kept.append(d)
     return kept
@@ -1243,10 +1259,12 @@ def _apply_whitelist(text: str, detections: list[Detection],
 
 def _add_blocklist(text: str, detections: list[Detection],
                    blocklist: list[str] | None) -> list[Detection]:
-    """Force le masquage (``[CONFIDENTIEL]``) des termes de la liste noire."""
+    """Force le masquage (``[CONFIDENTIEL]``) des termes de la liste noire,
+    comme mots entiers (« Dupont » ne masque pas « Duponteau »)."""
     terms = [t.strip() for t in (blocklist or []) if t.strip()]
     for term in terms:
-        for m in re.finditer(re.escape(term), text, flags=re.IGNORECASE):
+        pattern = rf"(?<![\w]){re.escape(term)}(?![\w])"
+        for m in re.finditer(pattern, text, flags=re.IGNORECASE):
             detections.append(Detection(m.start(), m.end(), "CUSTOM", 1.0))
     return detections
 
