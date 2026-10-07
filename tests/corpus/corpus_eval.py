@@ -111,6 +111,16 @@ def _detections(text: str):
     return detect_entities(text)
 
 
+def _apply(text: str, detections) -> str:
+    parts, last = [], 0
+    for d in sorted(detections, key=lambda d: d.start):
+        parts.append(text[last:d.start])
+        parts.append(f"[{d.label}]")
+        last = d.end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Fidélité du texte : mots du document source
 # ---------------------------------------------------------------------------
@@ -300,10 +310,13 @@ def evaluate_document(annotation: dict, check_determinism: bool = True) -> Docum
     started = time.perf_counter()
     output = process_file(name, content).content.decode("utf-8")
     result.seconds = time.perf_counter() - started
-    if check_determinism:
-        result.deterministic = process_file(name, content).content.decode("utf-8") == output
 
+    # Second traitement, indépendant : sert au contrôle des étiquettes et du
+    # déterminisme (la sortie reconstruite doit être identique à l'octet près).
     extracted = extract_text(name, content)
+    detections = _detections(extracted)
+    if check_determinism:
+        result.deterministic = _apply(extracted, detections) == output
 
     # Fuites
     for category, values in annotation.get("mask", {}).items():
@@ -331,7 +344,6 @@ def evaluate_document(annotation: dict, check_determinism: bool = True) -> Docum
     groups_same = annotation.get("same_label", [])
     groups_distinct = annotation.get("distinct_labels", [])
     if groups_same or groups_distinct:
-        detections = _detections(extracted)
         for group in groups_same:
             result.label_checks += 1
             labels = [lab for mention in group for lab in _labels_for(mention, extracted, detections)]
