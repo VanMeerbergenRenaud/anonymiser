@@ -73,14 +73,13 @@ règles). En conséquence :
 from __future__ import annotations
 
 import bisect
-import itertools
 import logging
 import os
 import re
 import unicodedata
 import warnings
-from dataclasses import dataclass
-from typing import Iterable, Optional
+from dataclasses import replace
+from typing import Optional
 
 from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngine, NlpEngineProvider
@@ -94,6 +93,12 @@ from api import settings
 from api.compute import COMPUTE
 from api.ocr import MARKERS, OCR_END, OCR_START
 from api.progress import ProgressCallback, report
+from api.persons import (
+    assign_person_labels,
+    attach_initials,
+    find_initials_persons,
+    split_persons,
+)
 from api.recognizers import (
     NAME_PARTICLES,
     NAME_STOP_WORDS,
@@ -106,6 +111,8 @@ from api.recognizers import (
     fold,
     trim_person_name,
 )
+from api.spans import Detection
+from api.spans import SpanIndex as _SpanIndex
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +184,9 @@ OCR_SCORE_THRESHOLD: float = settings.env_float("ANON_OCR_SCORE_THRESHOLD", 0.4)
 
 PSEUDONYMS: bool = settings.env_flag("ANON_PSEUDONYMS", True)
 """Numérote les personnes (``[PERSONNE_1]``…) plutôt que ``[PERSONNE]``."""
+
+MASK_INITIALS: bool = settings.env_flag("ANON_MASK_INITIALS", True)
+"""Masque les initiales seules qui désignent une personne (« P.V. et G.G. »)."""
 
 
 def _thousands(n: int) -> str:
@@ -366,38 +376,6 @@ def known_word(word: str) -> bool:
 # ---------------------------------------------------------------------------
 # Structures
 # ---------------------------------------------------------------------------
-
-@dataclass
-class Detection:
-    """Une entité à masquer : position dans le texte, type, score, label."""
-
-    start: int
-    end: int
-    entity: str
-    score: float
-    label: str = ""
-    from_ner: bool = False
-    """Vrai si la détection provient du modèle NER (et non d'une règle)."""
-
-
-class _SpanIndex:
-    """Index (statique) d'intervalles ``[start, end)``.
-
-    Répond en O(log n) à « ``[start, end)`` chevauche-t-il un intervalle
-    indexé ? », là où un parcours de la liste coûterait O(n) — soit O(n²)
-    pour un document entier.
-    """
-
-    def __init__(self, spans: Iterable[tuple[int, int]]) -> None:
-        ordered = sorted(spans)
-        self._starts = [s for s, _ in ordered]
-        # _max_end[i] = plus grande fin parmi les i+1 premiers intervalles.
-        self._max_end = list(itertools.accumulate((e for _, e in ordered), max))
-
-    def overlaps(self, start: int, end: int) -> bool:
-        count = bisect.bisect_left(self._starts, end)  # intervalles débutant avant `end`
-        return count > 0 and self._max_end[count - 1] > start
-
 
 # ---------------------------------------------------------------------------
 # Listes de mots (forme « fold » : majuscules sans accents)
@@ -738,7 +716,7 @@ def _trim_protected(text: str, detections: list[Detection],
         for s, e in pieces:
             s, e = _strip_edges(text, s, e)
             if e > s and any(ch.isalnum() for ch in text[s:e]):
-                result.append(Detection(s, e, d.entity, d.score, from_ner=d.from_ner))
+                result.append(replace(d, start=s, end=e))
     return result
 
 
@@ -1012,7 +990,7 @@ def _merge_overlaps(detections: list[Detection]) -> list[Detection]:
         ))
         merged.append(Detection(
             min(d.start for d in members), max(d.end for d in members),
-            best.entity, max(d.score for d in members),
+            best.entity, max(d.score for d in members), kind=best.kind,
         ))
     return merged
 
@@ -1024,6 +1002,23 @@ _HOUSE_NUMBER_TAIL_RE = re.compile(
     r"(?=[ \t]*(?:[,.;)\n]|$))"
 )
 _ADDRESS_GAP_RE = re.compile(r"[ \t]*[,–-]?[ \t]*\n?[ \t]*")
+
+
+_INITIAL_START_RE = re.compile(rf"[{UPPER}]\.(?:-?[{UPPER}]\.)*(?:\s|$)")
+
+
+def _distinct_names(first: str, second: str, a: Detection, b: Detection) -> bool:
+    """Vrai si deux noms de personne voisins désignent deux personnes.
+
+    « Jean » + « DUPONT » (le NER coupe parfois un nom) forment un seul nom ;
+    « N. Dupont » + « P. Nihoul » ou « Pierre Dupont » + « Marie Martin »
+    (énumération, colonnes de signatures recollées) en forment deux.
+    """
+    if "initials" in (a.kind, b.kind):
+        return True
+    if _INITIAL_START_RE.match(second):
+        return True
+    return len(first.split()) >= 2 and len(second.split()) >= 2
 
 
 def _merge_adjacent(text: str, detections: list[Detection]) -> list[Detection]:
@@ -1046,6 +1041,8 @@ def _merge_adjacent(text: str, detections: list[Detection]) -> list[Detection]:
             same_join = (
                 prev.entity == d.entity and d.entity in _NER_TYPES | {"FR_NOM_PROPRE"}
                 and gap in ("", " ")
+                and not (d.entity == "PERSON" and _distinct_names(
+                    text[prev.start:prev.end], text[d.start:d.end], prev, d))
             )
             if address_join or same_join:
                 result[-1] = Detection(
@@ -1070,76 +1067,14 @@ def _merge_adjacent(text: str, detections: list[Detection]) -> list[Detection]:
 # Étape 6 : labels (pseudonymes numérotés pour les personnes)
 # ---------------------------------------------------------------------------
 
-def _name_parts(value: str) -> tuple[set[str], set[str]]:
-    """Sépare prénoms et noms de famille (« Jean DUPONT » → {JEAN}, {DUPONT})."""
-    tokens = []
-    for raw in re.split(r"[\s,;:()]+", value):
-        key = fold(raw).strip(".'’")
-        if key and key not in NAME_PARTICLES and len(key) >= 2:
-            tokens.append((raw, key))
-    if not tokens:
-        return set(), set()
-    uppers = [k for raw, k in tokens if raw.isupper()]
-    if uppers and len(uppers) < len(tokens):
-        return {k for raw, k in tokens if not raw.isupper()}, set(uppers)
-    if len(tokens) == 1:
-        return set(), {tokens[0][1]}
-    return {k for _, k in tokens[:-1]}, {tokens[-1][1]}
-
-
 def _assign_labels(text: str, detections: list[Detection]) -> list[Detection]:
-    """Attribue les labels ; un numéro stable par personne si ``PSEUDONYMS``."""
-    persons = [d for d in detections if d.entity == "PERSON"]
+    """Attribue les labels ; un numéro stable par personne si ``PSEUDONYMS``
+    (voir :func:`api.persons.assign_person_labels`)."""
     for d in detections:
         d.label = get_label(d.entity)
-    if not PSEUDONYMS or not persons:
-        return detections
-
-    clusters: list[dict] = []  # {"firsts", "surnames", "first_pos"}
-    assignment: dict[int, int] = {}
-    parts = {id(d): _name_parts(text[d.start:d.end]) for d in persons}
-
-    # 1) Mentions complètes (prénom + nom) : elles définissent les personnes.
-    for d in persons:
-        firsts, surnames = parts[id(d)]
-        if not firsts:
-            continue
-        target = None
-        for i, c in enumerate(clusters):
-            if c["surnames"] & surnames and (not c["firsts"] or c["firsts"] & firsts):
-                target = i
-                break
-        if target is None:
-            clusters.append({"firsts": set(firsts), "surnames": set(surnames), "first_pos": d.start})
-            target = len(clusters) - 1
-        else:
-            clusters[target]["firsts"] |= firsts
-            clusters[target]["first_pos"] = min(clusters[target]["first_pos"], d.start)
-        assignment[id(d)] = target
-
-    # 2) Mentions partielles (« BERNARD », « Thomas ») : rattachées à la
-    #    personne correspondante la plus proche qui précède.
-    for d in persons:
-        if id(d) in assignment:
-            continue
-        _, keys = parts[id(d)]
-        candidates = [i for i, c in enumerate(clusters) if c["surnames"] & keys]
-        if not candidates:
-            candidates = [i for i, c in enumerate(clusters) if c["firsts"] & keys]
-        if candidates:
-            before = [i for i in candidates if clusters[i]["first_pos"] <= d.start]
-            target = max(before or candidates, key=lambda i: clusters[i]["first_pos"])
-            clusters[target]["first_pos"] = min(clusters[target]["first_pos"], d.start)
-        else:
-            clusters.append({"firsts": set(), "surnames": set(keys), "first_pos": d.start})
-            target = len(clusters) - 1
-        assignment[id(d)] = target
-
-    order = sorted(range(len(clusters)), key=lambda i: clusters[i]["first_pos"])
-    number = {cluster: n for n, cluster in enumerate(order, start=1)}
-    base = get_label("PERSON")
-    for d in persons:
-        d.label = f"{base}_{number[assignment[id(d)]]}"
+    persons = [d for d in detections if d.entity == "PERSON"]
+    if persons:
+        assign_person_labels(text, persons, get_label("PERSON"), numbered=PSEUDONYMS)
     return detections
 
 
@@ -1218,7 +1153,12 @@ def detect_entities(
     detections = _detach_identifiers(analysis_text, detections)
     detections = _propagate_identifiers(analysis_text, detections)
     detections = _add_uppercase_names(analysis_text, detections)
+    detections = split_persons(analysis_text, detections)
     detections = _propagate_persons(analysis_text, detections)
+    detections = attach_initials(analysis_text, detections)
+    if MASK_INITIALS:
+        occupied = _SpanIndex((d.start, d.end) for d in detections)
+        detections += find_initials_persons(analysis_text, occupied)
     detections = _trim_protected(analysis_text, detections, protected)
     detections = _apply_whitelist(analysis_text, detections, whitelist)
     detections = _add_blocklist(analysis_text, detections, blocklist)
