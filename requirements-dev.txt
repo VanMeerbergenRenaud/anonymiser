@@ -1,0 +1,10 @@
+# Dépendances de développement (tests).
+#
+# Installation :
+#   pip install -r requirements-dev.txt
+# Lancement :
+#   PYTHONPATH=. ./venv/bin/python -m pytest
+
+-r requirements-local.txt
+
+pytest>=8,<9

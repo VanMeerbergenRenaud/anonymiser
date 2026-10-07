@@ -1,100 +1,206 @@
 """
-nlp_engine — Moteur NLP partagé pour l'anonymisation de textes français.
+nlp_engine — Moteur d'anonymisation partagé (textes français / belges).
 
-Ce module centralise toute la configuration Presidio / spaCy utilisée par
-les endpoints ``anonymize_text`` et ``anonymize_file``.  Il est chargé une
-seule fois au démarrage du serveur et les instances sont ensuite réutilisées
+Ce module centralise toute la configuration Presidio / NER utilisée par les
+endpoints ``anonymize_text`` et ``anonymize_file``. Il est chargé une seule
+fois au démarrage du serveur et les instances sont ensuite réutilisées
 (singletons au niveau du module).
 
-Entités détectées
------------------
-- PERSON / PER → [PERSONNE]
-- LOCATION / LOC → [LIEU]
-- ORGANIZATION / ORG → [SOCIÉTÉ]
-- EMAIL_ADDRESS → [EMAIL]
-- PHONE_NUMBER → [TÉLÉPHONE]
-- IBAN_CODE → [IBAN]
-- FR_NIR (n° sécu) → [NIR]
-- FR_POSTAL_CODE → [CODE_POSTAL]
-- FR_DATE_NAISSANCE → [DATE_NAISSANCE]
-- FR_NUM_ROLE (n° de rôle /FA) → [ROLE]
-- FR_NOM_PROPRE (noms en capitales) → [Nom propre]
-- NRP → [NATIONALITÉ]
-- CREDIT_CARD → [CARTE_BANCAIRE]
-- IP_ADDRESS → [ADRESSE_IP]
-- URL → [URL]
+Chaîne de traitement
+--------------------
+1. **Détection** — Presidio combine :
 
-Entités conservées (non anonymisées)
-------------------------------------
-- DATE_TIME → conservé tel quel pour préserver la chronologie
+   - le NER (CamemBERT ou spaCy) pour les personnes, lieux et organisations ;
+   - les recognizers sur mesure de ``api.recognizers`` (registre national
+     belge, IBAN, téléphones, adresses, noms précédés d'une civilité,
+     champs de formulaire, dates de naissance…) ;
+   - quelques recognizers Presidio (carte bancaire, URL, adresse IP).
+
+2. **Nettoyage** — suppression des faux positifs : intitulés juridiques en
+   capitales (« PAR CES MOTIFS »), juridictions et institutions (« Tribunal
+   de première instance », « Code civil »), fonctions (« Directrice
+   Générale »), civilités incluses par erreur dans un nom…
+
+3. **Compléments** — séquences de noms en capitales non détectées
+   (« RENAUD TECH SOLUTIONS » → ``[Nom propre]``) et **propagation** : un nom
+   détecté une fois est masqué partout dans le document (« Monsieur
+   BERNARD », « Bernard », « BERNARD »).
+
+4. **Fusion** — les détections qui se chevauchent sont réunies (rien ne
+   fuit entre deux détections), les morceaux d'adresse contigus aussi.
+
+5. **Pseudonymes** — chaque personne reçoit un numéro stable dans tout le
+   document (``[PERSONNE_1]``, ``[PERSONNE_2]``…), ce qui garde le texte
+   compréhensible (« qui a fait quoi »). Désactivable via
+   ``ANON_PSEUDONYMS=0`` (toutes les personnes deviennent ``[PERSONNE]``).
+
+Texte issu d'images (OCR)
+-------------------------
+Les passages encadrés par les marqueurs de ``api.ocr`` sont anonymisés avec
+un seuil de confiance plus bas (``ANON_OCR_SCORE_THRESHOLD``, défaut 0.4) :
+l'OCR introduit des erreurs qui font baisser les scores. Les lignes de
+marqueurs elles-mêmes ne sont jamais modifiées.
 
 Moteur NER (backend)
 --------------------
-Le backend de reconnaissance d'entités est sélectionnable via la variable
-d'environnement ``ANON_NLP_BACKEND`` :
+Sélectionnable via ``ANON_NLP_BACKEND`` :
 
 - ``transformers`` → CamemBERT-NER (``Jean-Baptiste/camembert-ner``), plus
-  précis sur le français, recommandé en local. Nécessite ``torch`` +
-  ``transformers`` (voir ``requirements-local.txt``). Le modèle (~440 Mo) est
-  téléchargé une seule fois dans ``~/.cache/huggingface`` puis utilisé
-  hors-ligne.
-- ``spacy`` → modèle spaCy ``fr_core_news_md`` (léger, utilisé sur Vercel où
-  CamemBERT ne rentre pas dans une fonction serverless).
+  précis sur le français, recommandé. Nécessite ``torch`` + ``transformers``
+  (voir ``requirements-local.txt``).
+- ``spacy`` → modèle spaCy ``fr_core_news_md`` (léger, utilisé sur Vercel).
 
 Par défaut : ``spacy`` sur Vercel (variable ``VERCEL`` présente), sinon
-``transformers``.
+``transformers`` si installé.
+
+Performances
+------------
+Le NER représente l'essentiel du temps de calcul (≈ 6 000 caractères par
+seconde pour CamemBERT sur 4 cœurs, contre quelques millisecondes pour les
+règles). En conséquence :
+
+- seuls les composants spaCy utiles sont exécutés (tokenisation + NER) ;
+- l'inférence a la machine pour elle seule (``api.compute.COMPUTE``) :
+  PyTorch parallélise déjà chaque calcul sur tous les cœurs, et une
+  inférence concurrente d'une autre inférence ou d'un OCR serait des
+  dizaines de fois plus lente (spaCy n'est par ailleurs pas garanti
+  « thread-safe ») ;
+- les étapes de post-traitement utilisent des index triés (recherche
+  dichotomique) : leur coût reste négligeable même pour des documents de
+  plusieurs milliers de pages.
 """
 
 from __future__ import annotations
 
+import bisect
+import itertools
+import logging
 import os
 import re
+import unicodedata
+import warnings
+from dataclasses import dataclass
+from typing import Iterable, Optional
 
-from presidio_analyzer import (
-    AnalyzerEngine,
-    PatternRecognizer,
-    Pattern,
-    RecognizerRegistry,
+from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, RecognizerResult
+from presidio_analyzer.nlp_engine import NlpEngine, NlpEngineProvider
+from presidio_analyzer.predefined_recognizers import (
+    CreditCardRecognizer,
+    IpRecognizer,
+    UrlRecognizer,
 )
-from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_analyzer.predefined_recognizers import CreditCardRecognizer
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
+
+from api import settings
+from api.compute import COMPUTE
+from api.ocr import MARKERS, OCR_END, OCR_START
+from api.progress import ProgressCallback, report
+from api.recognizers import (
+    NAME_PARTICLES,
+    NAME_STOP_WORDS,
+    ROLE_WORDS,
+    TITLE_BEFORE_RE,
+    TITLE_WORDS,
+    UPPER,
+    UPPER_WORD,
+    build_recognizers,
+    fold,
+    trim_person_name,
+)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Mapping entité Presidio → label français lisible
+# Mapping entité → label français lisible
 # ---------------------------------------------------------------------------
 
 ENTITY_LABELS: dict[str, str] = {
     "PERSON": "PERSONNE",
     "LOCATION": "LIEU",
+    "ADDRESS": "ADRESSE",
+    "ORGANIZATION": "SOCIÉTÉ",
     "EMAIL_ADDRESS": "EMAIL",
     "PHONE_NUMBER": "TÉLÉPHONE",
     "IBAN_CODE": "IBAN",
+    "BANK_ACCOUNT": "COMPTE_BANCAIRE",
+    "CREDIT_CARD": "CARTE_BANCAIRE",
+    "BE_NATIONAL_NUMBER": "REGISTRE_NATIONAL",
+    "BE_ID_CARD": "CARTE_IDENTITÉ",
+    "PASSPORT": "PASSEPORT",
+    "BE_ENTERPRISE": "NUMÉRO_ENTREPRISE",
+    "VAT_NUMBER": "TVA",
     "FR_NIR": "NIR",
     "FR_POSTAL_CODE": "CODE_POSTAL",
     "NRP": "NATIONALITÉ",
-    "CREDIT_CARD": "CARTE_BANCAIRE",
     "IP_ADDRESS": "ADRESSE_IP",
     "URL": "URL",
-    "ORGANIZATION": "SOCIÉTÉ",
+    "BIRTH_DATE": "DATE_NAISSANCE",
     "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
-    "FR_NUM_ROLE": "ROLE",
+    "FR_NUM_ROLE": "NUMÉRO_RÔLE",
+    "CASE_REFERENCE": "RÉFÉRENCE_DOSSIER",
     "FR_NOM_PROPRE": "Nom propre",
     "FR_TVA": "TVA",
     "FR_SIRET": "SIRET",
     "FR_SIREN": "SIREN",
+    "LICENSE_PLATE": "PLAQUE",
     "CUSTOM": "CONFIDENTIEL",
 }
 
 # Entités détectées par l'analyseur mais conservées dans le texte final
 ENTITIES_TO_SKIP: set[str] = {"DATE_TIME"}
 
+# Priorité en cas d'égalité lors de la fusion de détections superposées.
+_PRIORITY: dict[str, int] = {
+    "BE_NATIONAL_NUMBER": 100, "FR_NIR": 95, "IBAN_CODE": 90, "CREDIT_CARD": 90,
+    "BANK_ACCOUNT": 85, "BE_ID_CARD": 85, "PASSPORT": 85, "EMAIL_ADDRESS": 80,
+    "BIRTH_DATE": 75, "PHONE_NUMBER": 70, "ADDRESS": 60, "PERSON": 55,
+    "LICENSE_PLATE": 50, "VAT_NUMBER": 50, "BE_ENTERPRISE": 50, "FR_SIRET": 45,
+    "FR_NUM_ROLE": 45, "CASE_REFERENCE": 42, "FR_SIREN": 40, "URL": 40,
+    "IP_ADDRESS": 40, "LOCATION": 30, "ORGANIZATION": 25, "FR_NOM_PROPRE": 20,
+    "NRP": 15, "FR_POSTAL_CODE": 10, "CUSTOM": 5,
+}
+
 
 def get_label(entity_type: str) -> str:
     """Retourne le label français pour un type d'entité Presidio."""
     return ENTITY_LABELS.get(entity_type, entity_type)
 
+
+SCORE_THRESHOLD: float = settings.env_float("ANON_SCORE_THRESHOLD", 0.5)
+"""Seuil de confiance minimal pour qu'une entité soit anonymisée.
+
+Évite la sur-anonymisation : les détections à faible score (ex : un nombre
+à 5 chiffres pris pour un code postal sans contexte d'adresse) sont ignorées
+sous ce seuil."""
+
+OCR_SCORE_THRESHOLD: float = settings.env_float("ANON_OCR_SCORE_THRESHOLD", 0.4)
+"""Seuil (plus permissif) appliqué au texte extrait d'images par OCR."""
+
+PSEUDONYMS: bool = settings.env_flag("ANON_PSEUDONYMS", True)
+"""Numérote les personnes (``[PERSONNE_1]``…) plutôt que ``[PERSONNE]``."""
+
+
+def _thousands(n: int) -> str:
+    """« 5000000 » → « 5 000 000 » (séparateur français)."""
+    return f"{n:,}".replace(",", " ")
+
+
+class TextTooLongError(ValueError):
+    """Le texte dépasse ``settings.MAX_TEXT_CHARS`` (voir ce réglage).
+
+    ``length`` est la longueur exacte si elle est connue, sinon ``None``
+    (document refusé en cours de lecture, dès que la limite est franchie).
+    """
+
+    def __init__(self, length: Optional[int] = None) -> None:
+        limit = _thousands(settings.MAX_TEXT_CHARS)
+        size = f"{_thousands(length)} caractères" if length else f"plus de {limit} caractères"
+        super().__init__(
+            f"Document trop long : {size} de texte (maximum {limit}). "
+            "Découpez-le en plusieurs fichiers."
+        )
+        self.length = length
+
+_MIN_THRESHOLD = min(SCORE_THRESHOLD, OCR_SCORE_THRESHOLD)
 
 # ---------------------------------------------------------------------------
 # Sélection et configuration du backend NER
@@ -106,7 +212,9 @@ _SPACY_MODEL = "fr_core_news_md"
 _TRANSFORMERS_MODEL = "Jean-Baptiste/camembert-ner"
 """Modèle CamemBERT-NER HuggingFace utilisé en backend ``transformers``."""
 
-# Mapping labels NER (spaCy ET CamemBERT utilisent PER/LOC/ORG/MISC)
+# Mapping labels NER (spaCy ET CamemBERT utilisent PER/LOC/ORG/MISC).
+# MISC (« Code civil », événements, œuvres…) est ignoré : trop bruité dans
+# les documents juridiques ; la nationalité est captée par des règles dédiées.
 _NER_ENTITY_MAPPING: dict[str, str] = {
     "PER": "PERSON",
     "PERSON": "PERSON",
@@ -114,8 +222,8 @@ _NER_ENTITY_MAPPING: dict[str, str] = {
     "LOCATION": "LOCATION",
     "ORG": "ORGANIZATION",
     "ORGANIZATION": "ORGANIZATION",
-    "MISC": "NRP",
 }
+_NER_LABELS_TO_IGNORE = ["O", "MISC"]
 
 
 def _transformers_available() -> bool:
@@ -151,6 +259,11 @@ def select_backend() -> str:
 
 def _nlp_configuration() -> dict:
     """Construit la configuration ``NlpEngineProvider`` selon le backend actif."""
+    ner_configuration = {
+        "labels_to_ignore": _NER_LABELS_TO_IGNORE,
+        "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
+        "low_score_entity_names": [],
+    }
     if select_backend() == "transformers":
         return {
             "nlp_engine_name": "transformers",
@@ -164,19 +277,15 @@ def _nlp_configuration() -> dict:
                 }
             ],
             "ner_model_configuration": {
-                "labels_to_ignore": ["O"],
+                **ner_configuration,
                 "aggregation_strategy": "simple",
                 "alignment_mode": "expand",
-                "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
             },
         }
     return {
         "nlp_engine_name": "spacy",
         "models": [{"lang_code": "fr", "model_name": _SPACY_MODEL}],
-        "ner_model_configuration": {
-            "labels_to_ignore": ["O"],
-            "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
-        },
+        "ner_model_configuration": ner_configuration,
     }
 
 
@@ -184,176 +293,46 @@ def _nlp_configuration() -> dict:
 # Construction de l'AnalyzerEngine
 # ---------------------------------------------------------------------------
 
+_NER_PIPES = frozenset({"hf_token_pipe", "ner"})
+"""Composants spaCy réellement utiles : le NER (CamemBERT ou spaCy).
+
+Les autres (morphologie, lemmatisation, analyse syntaxique) ne servent qu'à
+l'« amélioration par le contexte » de Presidio, qui ne concerne aucune de nos
+règles : les désactiver accélère l'analyse sans changer les détections. Le
+NER spaCy de ``fr_core_news_md`` possède son propre ``tok2vec`` interne."""
+
+# Annotations CamemBERT tombant à l'intérieur d'un seul mot spaCy (fragments
+# d'e-mails, d'URL — déjà masqués par les règles) : bruit sans conséquence
+# qui inonderait les logs à chaque document.
+warnings.filterwarnings("ignore", message=r"Skipping annotation, .* is overlapping")
+
+
+def _prune_pipelines(nlp_engine: NlpEngine) -> None:
+    """Désactive les composants spaCy inutiles (voir ``_NER_PIPES``)."""
+    for nlp in getattr(nlp_engine, "nlp", {}).values():
+        for name in list(nlp.pipe_names):
+            if name not in _NER_PIPES:
+                nlp.disable_pipe(name)
+        logger.info("Pipeline NLP actif : %s", nlp.pipe_names)
+
+
 def _build_analyzer() -> AnalyzerEngine:
     """Construit un ``AnalyzerEngine`` configuré pour le français juridique.
 
-    Inclut les recognizers prédéfinis de Presidio **plus** des recognizers
-    custom pour les entités françaises courantes (NIR, IBAN, téléphone,
-    code postal, date de naissance, numéro de rôle, e-mail).
-
-    Le moteur NER (spaCy ou CamemBERT) est choisi par ``select_backend()``.
+    Le registre ne contient que des recognizers pertinents pour la Belgique et
+    la France (les recognizers américains, indiens… de Presidio sont exclus :
+    ils produisaient des faux positifs).
     """
-    # --- Moteur NLP (spaCy ou Transformers/CamemBERT) -----------------------
     provider = NlpEngineProvider(nlp_configuration=_nlp_configuration())
     nlp_engine = provider.create_engine()
+    _prune_pipelines(nlp_engine)
 
-    # --- Recognizers custom -------------------------------------------------
-
-    custom_recognizers = [
-        # Numéro de sécurité sociale français (NIR) — 15 chiffres
-        PatternRecognizer(
-            supported_entity="FR_NIR",
-            name="French NIR Recognizer",
-            patterns=[
-                Pattern(
-                    name="nir_pattern",
-                    regex=r"\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b",
-                    score=0.9,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # IBAN (format FR + 2 contrôle + 23 alphanumérique)
-        PatternRecognizer(
-            supported_entity="IBAN_CODE",
-            name="IBAN Recognizer",
-            patterns=[
-                Pattern(
-                    name="iban_fr_pattern",
-                    regex=r"\b[A-Z]{2}\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{0,3}\b",
-                    score=0.85,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # Numéro de téléphone français
-        PatternRecognizer(
-            supported_entity="PHONE_NUMBER",
-            name="French Phone Recognizer",
-            patterns=[
-                Pattern(
-                    name="fr_phone_pattern",
-                    regex=r"\b(?:(?:\+33|0033)\s?[1-9](?:[\s.-]?\d{2}){4}|0[1-9](?:[\s.-]?\d{2}){4})\b",
-                    score=0.85,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # Code postal français (5 chiffres, score faible sauf si contexte)
-        PatternRecognizer(
-            supported_entity="FR_POSTAL_CODE",
-            name="French Postal Code Recognizer",
-            patterns=[
-                Pattern(
-                    name="fr_postal_pattern",
-                    regex=r"\b\d{5}\b",
-                    score=0.4,
-                ),
-            ],
-            supported_language="fr",
-            context=[
-                "code postal", "cp", "adresse",
-                "domicilié", "résidant", "habite", "situé",
-            ],
-        ),
-        # Adresse e-mail
-        PatternRecognizer(
-            supported_entity="EMAIL_ADDRESS",
-            name="Email Recognizer FR",
-            patterns=[
-                Pattern(
-                    name="email_pattern",
-                    regex=r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
-                    score=0.9,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # Numéro de rôle français (se termine par /FA)
-        PatternRecognizer(
-            supported_entity="FR_NUM_ROLE",
-            name="French Role Number Recognizer",
-            patterns=[
-                Pattern(
-                    name="role_pattern",
-                    regex=r"\b[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*/FA\b",
-                    score=0.9,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # Date de naissance (« né(e) le … »)
-        PatternRecognizer(
-            supported_entity="FR_DATE_NAISSANCE",
-            name="French Birth Date Recognizer",
-            patterns=[
-                Pattern(
-                    name="birth_date_pattern",
-                    regex=(
-                        r"(?i)\bné[es]?\s+le\s+"
-                        r"(?:\d{1,2}(?:er)?\s+"
-                        r"(?:janvier|f[eé]vrier|mars|avril|mai|juin|juillet|"
-                        r"ao[uû]t|septembre|octobre|novembre|d[eé]cembre)\s+\d{4}"
-                        r"|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}"
-                        r"|\d{1,2}\s+\d{1,2}\s+\d{4})\b"
-                    ),
-                    score=0.9,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # Carte bancaire — le recognizer prédéfini de Presidio (avec
-        # validation Luhn) n'est chargé qu'en anglais par défaut ; on
-        # l'enregistre explicitement pour le français.
-        CreditCardRecognizer(supported_language="fr"),
-        # N° de TVA intracommunautaire français (FR + clé + 9 chiffres SIREN)
-        PatternRecognizer(
-            supported_entity="FR_TVA",
-            name="French VAT Recognizer",
-            patterns=[
-                Pattern(
-                    name="tva_pattern",
-                    regex=r"\bFR\s?[0-9A-HJ-NP-Z]{2}\s?\d{3}\s?\d{3}\s?\d{3}\b",
-                    score=0.8,
-                ),
-            ],
-            supported_language="fr",
-        ),
-        # SIRET (14 chiffres) — score modéré, exige un contexte d'immatriculation
-        PatternRecognizer(
-            supported_entity="FR_SIRET",
-            name="French SIRET Recognizer",
-            patterns=[
-                Pattern(
-                    name="siret_pattern",
-                    regex=r"\b\d{3}\s?\d{3}\s?\d{3}\s?\d{5}\b",
-                    score=0.4,
-                ),
-            ],
-            supported_language="fr",
-            context=["siret", "rcs", "immatricul", "établissement", "siège"],
-        ),
-        # SIREN (9 chiffres) — score faible, n'est masqué qu'avec contexte
-        PatternRecognizer(
-            supported_entity="FR_SIREN",
-            name="French SIREN Recognizer",
-            patterns=[
-                Pattern(
-                    name="siren_pattern",
-                    regex=r"\b\d{3}\s?\d{3}\s?\d{3}\b",
-                    score=0.35,
-                ),
-            ],
-            supported_language="fr",
-            context=["siren", "rcs", "immatricul", "société", "registre"],
-        ),
-    ]
-
-    # --- Registre -----------------------------------------------------------
-    registry = RecognizerRegistry()
-    registry.supported_languages = ["fr"]
-    registry.load_predefined_recognizers(nlp_engine=nlp_engine, languages=["fr"])
-    for recognizer in custom_recognizers:
+    registry = RecognizerRegistry(supported_languages=["fr"])
+    registry.add_nlp_recognizer(nlp_engine)
+    registry.add_recognizer(CreditCardRecognizer(supported_language="fr"))
+    registry.add_recognizer(UrlRecognizer(supported_language="fr"))
+    registry.add_recognizer(IpRecognizer(supported_language="fr"))
+    for recognizer in build_recognizers("fr"):
         registry.add_recognizer(recognizer)
 
     return AnalyzerEngine(
@@ -370,233 +349,871 @@ def _build_analyzer() -> AnalyzerEngine:
 analyzer: AnalyzerEngine = _build_analyzer()
 """Instance partagée de l'analyseur Presidio."""
 
-anonymizer_engine: AnonymizerEngine = AnonymizerEngine()
-"""Instance partagée du moteur d'anonymisation Presidio."""
 
-SCORE_THRESHOLD: float = float(os.environ.get("ANON_SCORE_THRESHOLD", "0.5"))
-"""Seuil de confiance minimal pour qu'une entité soit anonymisée.
+# ---------------------------------------------------------------------------
+# Structures
+# ---------------------------------------------------------------------------
 
-Évite la sur-anonymisation : les détections à faible score (ex : un nombre
-à 5 chiffres pris pour un code postal sans contexte d'adresse, score 0.4)
-sont ignorées sous ce seuil."""
+@dataclass
+class Detection:
+    """Une entité à masquer : position dans le texte, type, score, label."""
+
+    start: int
+    end: int
+    entity: str
+    score: float
+    label: str = ""
+    from_ner: bool = False
+    """Vrai si la détection provient du modèle NER (et non d'une règle)."""
+
+
+class _SpanIndex:
+    """Index (statique) d'intervalles ``[start, end)``.
+
+    Répond en O(log n) à « ``[start, end)`` chevauche-t-il un intervalle
+    indexé ? », là où un parcours de la liste coûterait O(n) — soit O(n²)
+    pour un document entier.
+    """
+
+    def __init__(self, spans: Iterable[tuple[int, int]]) -> None:
+        ordered = sorted(spans)
+        self._starts = [s for s, _ in ordered]
+        # _max_end[i] = plus grande fin parmi les i+1 premiers intervalles.
+        self._max_end = list(itertools.accumulate((e for _, e in ordered), max))
+
+    def overlaps(self, start: int, end: int) -> bool:
+        count = bisect.bisect_left(self._starts, end)  # intervalles débutant avant `end`
+        return count > 0 and self._max_end[count - 1] > start
 
 
 # ---------------------------------------------------------------------------
-# Post-traitement : remplacement des noms propres en capitales
+# Listes de mots (forme « fold » : majuscules sans accents)
 # ---------------------------------------------------------------------------
 
-_UPPERCASE_NAME_RE = re.compile(
-    r"\b[A-ZÀ-Ú]{2,}(?:\s+[A-ZÀ-Ú]{2,})+\b"
+_HEADING_WORDS: frozenset[str] = frozenset({
+    # Mots-outils : un nom de personne n'en contient pas.
+    "ET", "OU", "LES", "AU", "AUX", "SUR", "POUR", "PAR", "DANS", "AVEC", "CES",
+    "CE", "CET", "CETTE", "UN", "UNE", "EN", "A", "QUE", "QUI", "NE", "PAS",
+    "SON", "SA", "SES", "LEUR", "LEURS", "NOTRE", "VOTRE", "NOS", "VOS", "TOUT",
+    "TOUS", "TOUTE", "TOUTES", "ENTRE", "CONTRE", "SANS", "SOUS", "VERS", "CHEZ",
+    "APRES", "AVANT", "DONT", "IL", "ELLE", "ILS", "ELLES", "NOUS", "VOUS",
+    "EST", "SONT", "ETRE", "AVOIR", "PLUS", "MOINS", "TRES", "AINSI", "COMME",
+    "SI", "NON", "OUI", "LORS", "DEVANT", "SELON", "SUITE", "FIN", "DEBUT",
+    # Vocabulaire juridique / structurel des intitulés.
+    "TRIBUNAL", "TRIBUNAUX", "COUR", "APPEL", "CASSATION", "JUGEMENT", "ARRET",
+    "ORDONNANCE", "ARTICLE", "ARTICLES", "REQUETE", "AUDIENCE", "GREFFE",
+    "CHAMBRE", "SECTION", "CONCLUSIONS", "CONCLUSION", "INSTANCE", "GRANDE",
+    "JUDICIAIRE", "ADMINISTRATIF", "ADMINISTRATIVE", "CONSEIL", "COMMERCE",
+    "REPUBLIQUE", "FRANCAISE", "ROYAUME", "BELGIQUE", "MINISTERE", "PUBLIC",
+    "PROCES", "VERBAL", "PROCES-VERBAL", "ATTENDU", "ATTENDUS", "MOTIFS", "VU",
+    "STATUANT", "CONTRADICTOIREMENT", "PRESENT", "PRESENTE", "PRESENTS",
+    "OBJET", "DOSSIER", "AFFAIRE", "PARTIES", "PARTIE", "DEMANDEUR",
+    "DEFENDEUR", "DEFENDERESSE", "DEMANDERESSE", "REQUERANT", "REQUERANTE",
+    "CITATION", "ASSIGNATION", "EXPOSE", "FAITS", "FAIT", "PROCEDURE",
+    "DISCUSSION", "DISPOSITIF", "DECISION", "DECIDE", "CONDAMNE", "CONDAMNER",
+    "CONSTATER", "DIRE", "JUGER", "DECLARER", "ORDONNER", "DEBOUTER",
+    "RECEVOIR", "PLAISE", "ELEMENTS", "PREUVE", "PREUVES", "TEMOIGNAGES",
+    "TEMOIGNAGE", "CONSEQUENCES", "MEDICALES", "FINANCIERES", "PIECES",
+    "PIECE", "INVENTAIRE", "ANNEXE", "ANNEXES", "BORDEREAU", "RAPPEL",
+    "PREAMBULE", "CONTRAT", "CONVENTION", "ACCORD", "AVENANT", "CHAPITRE",
+    "TITRE", "LIVRE", "PAGE", "TABLE", "MATIERES", "SOMMAIRE", "INTRODUCTION",
+    "RESUME", "NOTE", "NOTES", "REMARQUE", "ATTENTION", "IMPORTANT",
+    "CONFIDENTIEL", "URGENT", "COPIE", "ORIGINAL", "MONITEUR", "BELGE",
+    "JUSTICE", "PAIX", "PREMIERE", "TRAVAIL", "ENTREPRISE", "FAMILLE",
+    "JEUNESSE", "POLICE", "CORRECTIONNEL", "CORRECTIONNELLE", "CIVIL",
+    "CIVILE", "PENAL", "PENALE", "SOCIAL", "SOCIALE", "ASSISES", "PARQUET",
+    "PROCUREUR", "ROI", "GENERAL", "GENERALE", "GENERALES", "AUDITORAT",
+    "SERVICE", "FEDERAL", "SPF", "FINANCES", "CODE", "LOI", "DROIT", "DROITS",
+    "OBLIGATIONS", "RESPONSABILITE", "DOMMAGES", "INTERETS", "PREJUDICE",
+    "INDEMNITE", "INDEMNITES", "SALAIRE", "SALAIRES", "MONTANT", "TOTAL",
+    "EUROS", "EUR", "TVA", "HTVA", "TTC", "HT", "FACTURE", "DEVIS", "DATE",
+    "LIEU", "SIGNATURE", "NOM", "PRENOM", "PRENOMS", "ADRESSE", "TELEPHONE",
+    "EMAIL", "CI-APRES", "DENOMME", "DENOMMEE", "PROPRIETAIRE", "LOCATAIRE",
+    "BAILLEUR", "PRENEUR", "VENDEUR", "ACHETEUR", "ACQUEREUR", "EMPLOYEUR",
+    "TRAVAILLEUR", "SALARIE", "ACTE", "ACTES", "NOTAIRE", "VENTE", "BAIL",
+    "LOCATION", "MANDAT", "PROCURATION", "STATUTS", "ASSEMBLEE",
+    "EXTRAORDINAIRE", "ORDINAIRE", "RAPPORT", "EXPERTISE", "EXPERT", "AVIS",
+    "LETTRE", "COURRIER", "RECOMMANDE", "MISE", "DEMEURE", "REFERENCE",
+    "REFERENCES", "CONCERNE", "CONCERNANT", "REF", "CONFIDENTIALITE",
+    "CONDITIONS", "PARTICULIERES", "CLAUSE", "CLAUSES", "DEFINITIONS", "DUREE",
+    "RESILIATION", "PRIX", "PAIEMENT", "LIVRAISON", "GARANTIE", "GARANTIES",
+    "ASSURANCE", "SINISTRE", "CONSTATE", "DECLARE", "CERTIFIE", "ATTESTE",
+    "ATTESTATION", "CERTIFICAT", "MEDICAL", "MEDICALE", "INCAPACITE",
+    "MALADIE", "ACCIDENT", "SECURITE", "MUTUELLE", "MUTUALITE", "CHOMAGE",
+    "PENSION", "ALLOCATIONS", "FAMILIALES", "IMPOTS", "CONTRIBUTIONS",
+    "AVERTISSEMENT", "EXTRAIT", "ROLE", "NUMERO", "REGISTRE", "NATIONAL",
+    "COMMUNE", "VILLE", "PROVINCE", "REGION", "ETAT", "TEXTE", "DOCUMENT",
+    "INFORMATIONS", "COORDONNEES", "IDENTITE", "CARTE", "DEMANDE", "REPONSE",
+    "CONTRE-PARTIE", "HONORAIRES", "FRAIS", "DEPENS", "ETAT", "JUGE",
+    "PRESIDENT", "PRESIDENTE", "AVOCAT", "AVOCATS", "BARREAU", "ORDRE",
+    "DIVISION", "ARRONDISSEMENT", "CANTON", "JURIDICTION", "SIEGE", "REPERTOIRE",
+})
+"""Mots signalant un intitulé (« PAR CES MOTIFS ») et non un nom propre."""
+
+_HEADING_PARTICLES = frozenset({"DE", "DU", "DES", "LA", "LE", "L", "D"})
+
+_INSTITUTION_HEADS: frozenset[str] = frozenset({
+    "TRIBUNAL", "TRIBUNAUX", "COUR", "CONSEIL", "CODE", "LOI", "LOIS",
+    "PARQUET", "MINISTERE", "GREFFE", "CHAMBRE", "BARREAU", "JUSTICE",
+    "JURIDICTION", "COMMISSION", "CONSTITUTION", "CONVENTION", "REGLEMENT",
+    "DIRECTIVE", "MONITEUR", "GOUVERNEMENT", "PARLEMENT", "SENAT", "ETAT",
+    "SPF", "SPW", "AUDITORAT", "AUDITEUR", "PROCUREUR", "ORDRE", "ARTICLE",
+    "ARRETE", "DECRET", "ORDONNANCE", "TRAITE", "CHARTE", "CONFERENCE",
+    "ROYAUME", "REPUBLIQUE", "ASSEMBLEE", "CAISSE", "ONSS", "INAMI", "ONEM",
+    "FOREM", "ACTIRIS", "URSSAF", "CPAM", "SERVICE", "SERVICES", "DIRECTION",
+    "DEPARTEMENT", "RESSOURCES", "COMPTABILITE", "SECRETARIAT", "ADMINISTRATION",
+    "OFFICE", "INSTITUT", "AGENCE", "RGPD", "GDPR", "TVA", "BCE", "RCS", "SA",
+    "SRL", "SPRL", "SAS", "SARL", "ASBL", "DIVISION", "CANTON", "ARRONDISSEMENT",
+    # Structure du document (« Annexe photographique », « Pièce 12 ») : le
+    # NER les prend parfois pour des lieux ou des organisations.
+    "ANNEXE", "ANNEXES", "PIECE", "PIECES", "CHAPITRE", "TITRE", "SECTION",
+    "PAGE", "PARAGRAPHE", "ALINEA", "INVENTAIRE", "BORDEREAU", "SOMMAIRE",
+})
+"""Premier mot d'une juridiction / institution / texte légal / élément de
+structure du document : jamais masqué."""
+
+_KEPT_LOCATIONS: frozenset[str] = frozenset({
+    "BELGIQUE", "BELGIE", "BELGIUM", "FRANCE", "EUROPE", "UNION EUROPEENNE",
+    "WALLONIE", "FLANDRE", "FLANDRES", "REGION WALLONNE", "REGION FLAMANDE",
+    "FEDERATION WALLONIE-BRUXELLES", "ROYAUME DE BELGIQUE",
+})
+"""Pays / régions de juridiction : conservés (aucune valeur identifiante)."""
+
+_JURISDICTION_HEADS: frozenset[str] = frozenset({
+    "TRIBUNAL", "TRIBUNAUX", "COUR", "BARREAU", "DIVISION", "ARRONDISSEMENT",
+    "CANTON", "PARQUET", "AUDITORAT", "GREFFE", "PRUDHOMMES", "RCS", "JURIDICTION",
+})
+"""Mots introduisant le siège d'une juridiction : « Tribunal de première
+instance de Liège », « Barreau de Paris », « division Namur »."""
+
+_JURISDICTION_LINKS: frozenset[str] = frozenset({
+    "DE", "DU", "DES", "D", "LA", "L", "LE", "LES", "AU", "PREMIERE", "INSTANCE",
+    "APPEL", "ENTREPRISE", "TRAVAIL", "COMMERCE", "FAMILLE", "POLICE", "PAIX",
+    "JUSTICE", "CORRECTIONNEL", "CORRECTIONNELLE", "CIVIL", "CIVILE",
+    "JUDICIAIRE", "ADMINISTRATIF", "FRANCOPHONE", "NEERLANDOPHONE", "GRANDE",
+    "JEUNESSE", "CHAMBRE", "SECTION", "SIEGE", "CASSATION", "ASSISES",
+    "CONSEIL", "ORDRE", "AVOCATS", "ORDINAIRE", "APPLICATION", "PEINES",
+    "REFERE", "REFERES",
+} | _JURISDICTION_HEADS)
+"""Mots pouvant séparer ce mot du nom de lieu (« cour d'appel de … »)."""
+
+_JURISDICTION_ENDS: frozenset[str] = frozenset({"DE", "DU", "DES", "D", "L"}) | _JURISDICTION_HEADS
+
+
+def _is_jurisdiction_seat(text: str, start: int) -> bool:
+    """Vrai si le lieu commençant à ``start`` est le siège d'une juridiction.
+
+    « Tribunal de première instance de Liège, division Namur » : ni Liège ni
+    Namur ne désignent une personne, ils restent lisibles. « domicilié à
+    Liège » ou « le tribunal a constaté qu'il habite près de Liège » ne sont
+    pas concernés : seuls des mots de nom de juridiction peuvent séparer le
+    mot-clé du lieu.
+    """
+    line_start = max(text.rfind("\n", 0, start), start - 120) + 1
+    before = re.split(r"[,;:()\[\]«»\"]", text[line_start:start])[-1]
+    folded = re.sub(r"PRUD['’ ]?HOMMES", "PRUDHOMMES", fold(before))
+    words = [w for w in re.split(r"[\s'’-]+", folded) if w]
+    if not words or words[-1] not in _JURISDICTION_ENDS:
+        return False
+    for word in reversed(words):
+        if word in _JURISDICTION_HEADS:
+            return True
+        if word not in _JURISDICTION_LINKS:
+            return False
+    return False
+
+# ---------------------------------------------------------------------------
+# Outils texte
+# ---------------------------------------------------------------------------
+
+_SAME_LENGTH_SPACES = str.maketrans({
+    "\u00a0": " ", "\u202f": " ", "\u2007": " ", "\u2009": " ", "\u200a": " ",
+    "\u2002": " ", "\u2003": " ", "\u2010": "-", "\u2011": "-",
+})
+"""Espaces insécables / fines et tirets Unicode → équivalents ASCII (même
+longueur : les positions des détections restent valables sur le texte
+d'origine)."""
+
+_UPPERCASE_SEQ_RE = re.compile(
+    rf"(?<![\w-]){UPPER_WORD}(?:[ \t]+{UPPER_WORD})+(?![\w-])"
 )
-"""Regex capturant 2+ mots consécutifs entièrement en majuscules (min 2 car.)"""
-
-# Termes juridiques / structurels fréquemment écrits en capitales et qui ne
-# sont PAS des noms de personnes. Si une séquence en majuscules contient l'un
-# de ces mots, elle n'est pas remplacée par [Nom propre] (évite de masquer
-# « TRIBUNAL DE COMMERCE », « COUR D'APPEL », « PAR CES MOTIFS », etc.).
-_LEGAL_UPPERCASE_STOPWORDS: set[str] = {
-    "TRIBUNAL", "COUR", "APPEL", "CASSATION", "JUGEMENT", "ARRÊT", "ARRET",
-    "ORDONNANCE", "ARTICLE", "ARTICLES", "REQUÊTE", "REQUETE", "AUDIENCE",
-    "GREFFE", "CHAMBRE", "SECTION", "CONCLUSIONS", "INSTANCE", "GRANDE",
-    "JUDICIAIRE", "ADMINISTRATIF", "CONSEIL", "COMMERCE", "RÉPUBLIQUE",
-    "REPUBLIQUE", "FRANÇAISE", "FRANCAISE", "MINISTÈRE", "MINISTERE",
-    "PUBLIC", "PROCÈS", "PROCES", "VERBAL", "ATTENDU", "PAR", "CES",
-    "MOTIFS", "VU", "STATUANT", "CONTRADICTOIREMENT", "PRÉSENT", "PRESENT",
-}
+"""2+ mots consécutifs entièrement en majuscules (sur une même ligne)."""
 
 
-def _is_legal_header(matched: str) -> bool:
-    """Vrai si ``matched`` est un en-tête entièrement en majuscules contenant
-    un terme juridique/structurel (ex : « TRIBUNAL DE COMMERCE », « COUR D
-    APPEL »).
+class _FoldTable(dict):
+    """Table de traduction ``str.translate`` remplie à la demande.
 
-    Ne renvoie ``True`` que si le texte ne contient **aucune minuscule** :
-    ainsi un vrai nom de personne (« Jean DUPONT ») reste masqué, tandis que
-    les intitulés de juridiction en capitales sont préservés.
+    Chaque caractère distinct n'est normalisé qu'une seule fois : sur un long
+    document, ``translate`` est des dizaines de fois plus rapide qu'une
+    normalisation Unicode caractère par caractère.
     """
-    if not matched or matched != matched.upper():
+
+    def __missing__(self, code: int) -> str:
+        base = unicodedata.normalize("NFD", chr(code))[0]
+        upper = base.upper()
+        value = upper if len(upper) == 1 else base
+        self[code] = value
+        return value
+
+
+_FOLD_TABLE = _FoldTable()
+
+
+def fold_aligned(text: str) -> str:
+    """Comme :func:`fold`, mais conserve la longueur (index identiques)."""
+    return text.translate(_FOLD_TABLE)
+
+
+def _words(value: str) -> list[str]:
+    return [fold(t).strip(".,;:()[]\"'’") for t in re.split(r"[\s]+", value) if t.strip()]
+
+
+def _is_heading(sequence: str) -> bool:
+    """Vrai si une séquence en majuscules est un intitulé, pas un nom propre.
+
+    Ex : « EXPOSÉ DES FAITS ET DE LA PROCÉDURE », « TRIBUNAL DE COMMERCE DE
+    PARIS », « PAR CES MOTIFS ». Un nom (« JEAN DUPONT », « RENAUD TECH
+    SOLUTIONS ») renvoie ``False``.
+    """
+    if not sequence or sequence != sequence.upper():
         return False
-    if not any(ch.isalpha() for ch in matched):
+    parts: list[str] = []
+    for word in _words(sequence):
+        parts.extend(p for p in re.split(r"['’]", word) if p)
+    if not parts:
         return False
-    return any(tok in _LEGAL_UPPERCASE_STOPWORDS for tok in matched.split())
+    if any(p in _HEADING_WORDS for p in parts):
+        return True
+    if sum(p in _HEADING_PARTICLES for p in parts) >= 2:
+        return True
+    # Uniquement des sigles courts (« SPF BCE », « TVA HT ») : pas un nom.
+    return all(len(p) <= 3 for p in parts)
 
 
-def filter_legal_headers(text: str, results: list) -> list:
-    """Retire des résultats les en-têtes juridiques en majuscules.
-
-    Évite de masquer « TRIBUNAL DE COMMERCE DE PARIS » ou « COUR D APPEL »
-    même lorsque le moteur NER les détecte à tort comme PERSON / NRP.
-    """
-    return [r for r in results if not _is_legal_header(text[r.start : r.end])]
-
-
-def override_uppercase_entities(text: str, results: list) -> list:
-    """Remplace le type d'entité des résultats dont le texte est en capitales.
-
-    Si le texte capturé par Presidio correspond à une séquence de mots
-    entièrement en majuscules (≥2 mots de ≥2 caractères), son
-    ``entity_type`` est forcé à ``FR_NOM_PROPRE`` afin d'obtenir le
-    label ``[Nom propre]`` plutôt qu'un label incorrect (ex : NATIONALITÉ).
-
-    Les séquences contenant un terme juridique/structurel (ex : « TRIBUNAL
-    DE COMMERCE ») sont laissées intactes pour éviter la sur-anonymisation.
-    """
-    for r in results:
-        matched = text[r.start : r.end]
-        if _UPPERCASE_NAME_RE.fullmatch(matched) and not _is_legal_header(matched):
-            r.entity_type = "FR_NOM_PROPRE"
-    return results
-
-
-def replace_uppercase_names(text: str) -> str:
-    """Remplace les séquences de mots en majuscules par ``[Nom propre]``.
-
-    Appelée *après* l'anonymisation Presidio pour capturer les séquences
-    que Presidio n'a pas détectées du tout. Les intitulés juridiques en
-    capitales (ex : « COUR D'APPEL ») sont préservés.
-    """
-    def _sub(match: re.Match) -> str:
-        seq = match.group(0)
-        return seq if _is_legal_header(seq) else "[Nom propre]"
-
-    return _UPPERCASE_NAME_RE.sub(_sub, text)
+def _strip_edges(text: str, start: int, end: int) -> tuple[int, int]:
+    """Retire espaces et ponctuation en bordure d'une détection NER."""
+    junk = " \t\r\n,;:()[]{}\"«»“”'’-–—"
+    while start < end and text[start] in junk:
+        start += 1
+    while end > start and text[end - 1] in junk and not (
+        text[end - 1] == "." and end - start <= 3  # initiale « J. »
+    ):
+        end -= 1
+    return start, end
 
 
 # ---------------------------------------------------------------------------
-# Fonction utilitaire d'anonymisation de texte brut
+# Étape 1 : détection brute (Presidio), par morceaux
 # ---------------------------------------------------------------------------
 
-def anonymize_text(text: str) -> str:
-    """Analyse et anonymise un texte français.
+_NER_RECOGNIZERS = {"TransformersRecognizer", "SpacyRecognizer"}
 
-    Chaque entité détectée est remplacée par un label entre crochets,
-    par exemple ``[PERSONNE]``, ``[LIEU]``, ``[DATE_NAISSANCE]``, etc.
-    Les noms propres en capitales (ex : « RENAUD TECH COMPANY ») sont
-    remplacés par ``[Nom propre]``.
+_CHUNK_SIZE = 20_000
+"""Longueur maximale d'un morceau analysé (mémoire / limites spaCy)."""
 
-    Parameters
-    ----------
-    text : str
-        Texte brut en français à anonymiser.
 
-    Returns
-    -------
-    str
-        Texte anonymisé avec les labels de remplacement.
+def _chunks(text: str):
+    """Découpe le texte en morceaux d'au plus ``_CHUNK_SIZE`` caractères,
+    coupés de préférence entre deux paragraphes (aucune entité coupée)."""
+    pos, length = 0, len(text)
+    while pos < length:
+        end = min(length, pos + _CHUNK_SIZE)
+        if end < length:
+            floor = pos + _CHUNK_SIZE // 2
+            for sep in ("\n\n", "\n", " "):
+                cut = text.rfind(sep, floor, end)
+                if cut != -1:
+                    end = cut + len(sep)
+                    break
+        yield pos, text[pos:end]
+        pos = end
+
+
+def _raw_detections(text: str, progress: Optional[ProgressCallback] = None) -> list[Detection]:
+    """Détections Presidio (NER + règles), morceau par morceau.
+
+    La progression est exprimée en caractères analysés ; c'est aussi entre
+    deux morceaux que le traitement peut être annulé (voir ``api.progress``).
     """
-    results = analyzer.analyze(
-        text=text, language="fr", score_threshold=SCORE_THRESHOLD,
-    )
-    # Filtrer les entités à conserver (ex : dates)
-    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
-    # Préserver les en-têtes juridiques en majuscules (TRIBUNAL, COUR, etc.)
-    results = filter_legal_headers(text, results)
-    # Reclasser les entités en capitales comme noms propres
-    results = override_uppercase_entities(text, results)
-    operators = {
-        entity_type: OperatorConfig(
-            "replace", {"new_value": f"[{get_label(entity_type)}]"}
-        )
-        for entity_type in {r.entity_type for r in results}
-    }
-    anonymized = anonymizer_engine.anonymize(
-        text=text, analyzer_results=results, operators=operators,
-    )
-    # Post-traitement : noms propres en capitales non détectés par Presidio
-    return replace_uppercase_names(anonymized.text)
+    detections: list[Detection] = []
+    total = len(text)
+    report(progress, "analyze", 0, total)
+    for offset, chunk in _chunks(text):
+        if chunk.strip():
+            with COMPUTE.exclusive():
+                results = analyzer.analyze(
+                    text=chunk, language="fr", score_threshold=_MIN_THRESHOLD,
+                )
+            detections.extend(
+                Detection(
+                    r.start + offset, r.end + offset, r.entity_type, float(r.score),
+                    from_ner=(r.recognition_metadata or {}).get(
+                        RecognizerResult.RECOGNIZER_NAME_KEY) in _NER_RECOGNIZERS,
+                )
+                for r in results
+            )
+        report(progress, "analyze", offset + len(chunk), total)
+    return detections
 
 
 # ---------------------------------------------------------------------------
-# Analyse détaillée (couche de révision interactive)
+# Étape 2 : zones (marqueurs protégés, passages OCR)
 # ---------------------------------------------------------------------------
 
-def _detection_dict(text: str, start: int, end: int, entity_type: str,
-                    score: float) -> dict:
-    """Construit un dictionnaire de détection sérialisable en JSON."""
-    return {
-        "start": start,
-        "end": end,
-        "type": entity_type,
-        "label": get_label(entity_type),
-        "score": round(float(score), 3),
-        "value": text[start:end],
-    }
+_OCR_BLOCK_RE = re.compile(re.escape(OCR_START) + r"(.*?)" + re.escape(OCR_END), re.S)
 
+
+def _protected_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for marker in MARKERS:
+        spans.extend(m.span() for m in re.finditer(re.escape(marker), text))
+    return sorted(spans)
+
+
+def _ocr_spans(text: str) -> list[tuple[int, int]]:
+    return [m.span(1) for m in _OCR_BLOCK_RE.finditer(text)]
+
+
+def _apply_thresholds(detections: list[Detection],
+                      ocr_spans: list[tuple[int, int]]) -> list[Detection]:
+    """Filtre par score ; seuil OCR pour les détections dans un passage OCR.
+
+    ``ocr_spans`` est trié et sans chevauchement : le passage susceptible de
+    contenir une détection est trouvé par dichotomie.
+    """
+    starts = [s for s, _ in ocr_spans]
+    kept = []
+    for d in detections:
+        i = bisect.bisect_right(starts, d.start) - 1
+        in_ocr = i >= 0 and d.end <= ocr_spans[i][1]
+        if d.score >= (OCR_SCORE_THRESHOLD if in_ocr else SCORE_THRESHOLD):
+            kept.append(d)
+    return kept
+
+
+def _trim_protected(text: str, detections: list[Detection],
+                    protected: list[tuple[int, int]]) -> list[Detection]:
+    """Découpe les détections qui chevauchent une ligne de marqueur.
+
+    ``protected`` est trié et sans chevauchement (lignes distinctes) : seules
+    les lignes proches de chaque détection sont examinées.
+    """
+    if not protected:
+        return detections
+    starts = [ps for ps, _ in protected]
+    ends = [pe for _, pe in protected]
+    result: list[Detection] = []
+    for d in detections:
+        # Lignes chevauchant la détection : pe > d.start et ps < d.end.
+        first = bisect.bisect_right(ends, d.start)
+        last = bisect.bisect_left(starts, d.end)
+        if first >= last:
+            result.append(d)
+            continue
+        pieces = [(d.start, d.end)]
+        for ps, pe in protected[first:last]:
+            next_pieces = []
+            for s, e in pieces:
+                if e <= ps or s >= pe:
+                    next_pieces.append((s, e))
+                    continue
+                if s < ps:
+                    next_pieces.append((s, ps))
+                if e > pe:
+                    next_pieces.append((pe, e))
+            pieces = next_pieces
+        for s, e in pieces:
+            s, e = _strip_edges(text, s, e)
+            if e > s and any(ch.isalnum() for ch in text[s:e]):
+                result.append(Detection(s, e, d.entity, d.score, from_ner=d.from_ner))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Étape 3 : nettoyage des faux positifs
+# ---------------------------------------------------------------------------
+
+_NER_TYPES = {"PERSON", "LOCATION", "ORGANIZATION"}
+_LEADING_PARTICLE_RE = re.compile(
+    r"(?:de|du|des|la|le|les|à|au|aux|en|d['’]|l['’])[ \t]*(?=[A-ZÀ-Þ])"
+)
+
+
+def _clean(text: str, detections: list[Detection]) -> list[Detection]:
+    cleaned: list[Detection] = []
+    for d in detections:
+        if d.entity in ENTITIES_TO_SKIP:
+            continue
+        if d.from_ner and d.entity in _NER_TYPES:
+            d.start, d.end = _strip_edges(text, d.start, d.end)
+            value = text[d.start:d.end]
+            if len(value) < 2 or not any(ch.isupper() for ch in value):
+                continue  # mot commun en minuscules : pas un nom propre
+            if _is_heading(value):
+                continue
+            words = _words(value)
+            if not words:
+                continue
+            if d.entity == "PERSON":
+                titled = TITLE_BEFORE_RE.search(text, max(0, d.start - 15), d.start)
+                span = trim_person_name(text, d.start, d.end, keep_initials=bool(titled))
+                if span is None:
+                    continue
+                d.start, d.end = span
+            else:
+                # « de Paris » → « Paris » (l'article reste lisible).
+                lead = _LEADING_PARTICLE_RE.match(text, d.start, d.end)
+                if lead:
+                    d.start = lead.end()
+                if words[0] in _INSTITUTION_HEADS:
+                    continue
+                if " ".join(words) in _KEPT_LOCATIONS:
+                    continue
+                if _is_jurisdiction_seat(text, d.start):
+                    continue
+                if all(w in ROLE_WORDS or w in NAME_STOP_WORDS or w in _HEADING_WORDS
+                       for w in words):
+                    continue
+        cleaned.append(d)
+    return cleaned
+
+
+_IDENTIFIER_TYPES: frozenset[str] = frozenset({
+    "BE_NATIONAL_NUMBER", "FR_NIR", "IBAN_CODE", "CREDIT_CARD", "BANK_ACCOUNT",
+    "BE_ID_CARD", "PASSPORT", "EMAIL_ADDRESS", "PHONE_NUMBER", "FR_NUM_ROLE",
+    "CASE_REFERENCE", "VAT_NUMBER", "BE_ENTERPRISE", "FR_SIRET", "FR_SIREN",
+    "LICENSE_PLATE", "URL", "IP_ADDRESS", "BIRTH_DATE",
+})
+"""Identifiants trouvés par des règles (format et position exacts)."""
+
+_ID_MENTIONS: frozenset[str] = frozenset({
+    "RG", "FA", "RN", "NN", "NISS", "INSZ", "RRN", "REP", "N", "NO", "NR", "NUMERO",
+    "NUMEROS", "TEL", "GSM", "FAX", "IBAN", "BIC", "TVA", "BTW", "BCE", "KBO",
+    "PV", "NOTICE", "PORTALIS",
+})
+"""Mentions qui annoncent un identifiant (« R.G. n° », « RN », « GSM »)."""
+
+_NAME_TOKEN_RE = re.compile(rf"[{UPPER}][\w'’-]{{2,}}")
+
+
+def _has_name_word(value: str) -> bool:
+    """Vrai si ``value`` contient un mot pouvant appartenir à un nom propre."""
+    for token in _NAME_TOKEN_RE.findall(value):
+        key = fold(token).strip("'’-")
+        if not (key in NAME_STOP_WORDS or key in _HEADING_WORDS or key in _ID_MENTIONS
+                or any(ch.isdigit() for ch in key)):
+            return True
+    return False
+
+
+def _detach_identifiers(text: str, detections: list[Detection]) -> list[Detection]:
+    """Sépare les détections NER des identifiants trouvés par les règles.
+
+    Le NER étiquette parfois un identifiant et sa mention comme une entité
+    (« RG 21/123/A » → organisation, « RN 85.07.30-033.28 » → lieu) : la
+    fusion des détections masquerait alors aussi la mention (« [NUMÉRO_RÔLE] »
+    au lieu de « RG [NUMÉRO_RÔLE] »). La partie couverte par l'identifiant
+    est retirée de la détection NER, dont le reste n'est conservé que s'il
+    contient un vrai mot de nom (« Jean DUPONT 0475… » garde « Jean DUPONT »).
+    """
+    spans = sorted((d.start, d.end) for d in detections
+                   if not d.from_ner and d.entity in _IDENTIFIER_TYPES)
+    if not spans:
+        return detections
+    # Union des identifiants : intervalles triés et disjoints.
+    merged: list[list[int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    starts = [s for s, _ in merged]
+    ends = [e for _, e in merged]
+
+    result: list[Detection] = []
+    for d in detections:
+        if not d.from_ner:
+            result.append(d)
+            continue
+        first = bisect.bisect_right(ends, d.start)
+        last = bisect.bisect_left(starts, d.end)
+        if first >= last:
+            result.append(d)
+            continue
+        cursor = d.start
+        pieces: list[tuple[int, int]] = []
+        for s, e in merged[first:last]:
+            if s > cursor:
+                pieces.append((cursor, s))
+            cursor = max(cursor, e)
+        if cursor < d.end:
+            pieces.append((cursor, d.end))
+        for s, e in pieces:
+            s, e = _strip_edges(text, s, e)
+            if e > s and _has_name_word(text[s:e]):
+                result.append(Detection(s, e, d.entity, d.score, from_ner=True))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Étape 4 : compléments (noms en capitales, propagation)
+# ---------------------------------------------------------------------------
+
+def _add_uppercase_names(text: str, detections: list[Detection]) -> list[Detection]:
+    """Ajoute les séquences en capitales (hors intitulés) non encore détectées."""
+    # Les séquences trouvées ne se chevauchent pas entre elles : l'index des
+    # détections existantes suffit.
+    occupied = _SpanIndex((d.start, d.end) for d in detections)
+    added: list[Detection] = []
+    for m in _UPPERCASE_SEQ_RE.finditer(text):
+        if occupied.overlaps(m.start(), m.end()):
+            continue
+        tokens = list(re.finditer(r"\S+", m.group(0)))
+        # « MONSIEUR JEAN DUPONT » : la civilité n'est pas masquée.
+        while tokens and fold(tokens[0].group(0)).strip(".") in TITLE_WORDS:
+            tokens.pop(0)
+        if len(tokens) < 2:
+            continue
+        start, end = m.start() + tokens[0].start(), m.start() + tokens[-1].end()
+        if _is_heading(text[start:end]):
+            continue
+        added.append(Detection(start, end, "FR_NOM_PROPRE", 0.6))
+    return detections + added
+
+
+_COMMON_CAPITALIZED: frozenset[str] = frozenset({
+    "SAINT", "SAINTE", "SAINTS", "MONT", "PONT", "BOIS", "VAL", "GRAND",
+    "GRANDE", "PETIT", "PETITE", "NOUVEAU", "VIEUX", "HAUT", "BAS",
+})
+"""Mots trop courants pour être propagés seuls comme nom de personne."""
+
+
+def _person_terms(text: str, detections: list[Detection]) -> set[str]:
+    terms: set[str] = set()
+    for d in detections:
+        if d.entity != "PERSON":
+            continue
+        for token in re.split(r"[\s,;:()]+", text[d.start:d.end]):
+            if not token or not token[:1].isupper():
+                continue
+            key = fold_aligned(token).strip(".'’")
+            if (len(key) < 3 or key in NAME_PARTICLES or key in NAME_STOP_WORDS
+                    or key in _HEADING_WORDS or key in _COMMON_CAPITALIZED):
+                continue
+            terms.add(key)
+    return terms
+
+
+def _propagate_persons(text: str, detections: list[Detection]) -> list[Detection]:
+    """Masque toutes les autres mentions des noms de personnes détectés.
+
+    « Thomas BERNARD » détecté une fois → « BERNARD », « Bernard » et
+    « Thomas » sont masqués partout (mais pas « bernard » en minuscules, qui
+    peut être un mot courant).
+    """
+    terms = _person_terms(text, detections)
+    if not terms:
+        return detections
+    folded = fold_aligned(text)
+    alternation = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+    pattern = re.compile(rf"(?<![\w'’-])(?:{alternation})(?![\w-])")
+    occupied = _SpanIndex((d.start, d.end) for d in detections)
+    added: list[Detection] = []
+    for m in pattern.finditer(folded):
+        if not text[m.start()].isupper():
+            continue
+        if occupied.overlaps(m.start(), m.end()):
+            continue
+        added.append(Detection(m.start(), m.end(), "PERSON", 0.8))
+    return detections + added
+
+
+# ---------------------------------------------------------------------------
+# Étape 5 : fusion des détections
+# ---------------------------------------------------------------------------
+
+def _merge_overlaps(detections: list[Detection]) -> list[Detection]:
+    """Réunit les détections qui se chevauchent (union des positions).
+
+    Le type retenu est celui d'une règle (validée : clé de contrôle, format)
+    plutôt que d'une supposition du NER, puis celui de la détection couvrant
+    le plus de caractères (une adresse complète l'emporte sur la ville qu'elle
+    contient), puis du meilleur score, puis de la priorité du type.
+    """
+    ordered = sorted(detections, key=lambda d: (d.start, -d.end))
+    groups: list[list[Detection]] = []
+    group_end = -1
+    for d in ordered:
+        if groups and d.start < group_end:
+            groups[-1].append(d)
+            group_end = max(group_end, d.end)
+        else:
+            groups.append([d])
+            group_end = d.end
+    merged: list[Detection] = []
+    for members in groups:
+        best = max(members, key=lambda d: (
+            not d.from_ner, d.end - d.start, d.score, _PRIORITY.get(d.entity, 0),
+        ))
+        merged.append(Detection(
+            min(d.start for d in members), max(d.end for d in members),
+            best.entity, max(d.score for d in members),
+        ))
+    return merged
+
+
+_ADDRESS_PARTS = {"ADDRESS", "LOCATION", "FR_POSTAL_CODE"}
+_HOUSE_NUMBER_TAIL_RE = re.compile(
+    r"[ \t]*,?[ \t]*(?:n°[ \t]*)?\d{1,4}[A-Za-z]?(?![\d\w])"
+    r"(?:[ \t]*,?[ \t]*(?i:bte|bo[îi]te|bus|b)\.?[ \t]*[A-Za-z]?\d{1,4})?"
+    r"(?=[ \t]*(?:[,.;)\n]|$))"
+)
+_ADDRESS_GAP_RE = re.compile(r"[ \t]*[,–-]?[ \t]*\n?[ \t]*")
+
+
+def _merge_adjacent(text: str, detections: list[Detection]) -> list[Detection]:
+    """Fusionne les détections contiguës qui forment une même entité.
+
+    - morceaux d'adresse : « [ADRESSE], [LIEU] » → « [ADRESSE] » ;
+    - fragments d'un même nom séparés par une espace : « [PERSONNE]
+      [PERSONNE] » → « [PERSONNE] ».
+    """
+    result: list[Detection] = []
+    for d in sorted(detections, key=lambda d: d.start):
+        if result:
+            prev = result[-1]
+            gap = text[prev.end:d.start]
+            address_join = (
+                prev.entity in _ADDRESS_PARTS and d.entity in _ADDRESS_PARTS
+                and "ADDRESS" in (prev.entity, d.entity)
+                and len(gap) <= 6 and _ADDRESS_GAP_RE.fullmatch(gap)
+            )
+            same_join = (
+                prev.entity == d.entity and d.entity in _NER_TYPES | {"FR_NOM_PROPRE"}
+                and gap in ("", " ")
+            )
+            if address_join or same_join:
+                result[-1] = Detection(
+                    prev.start, d.end, "ADDRESS" if address_join else d.entity,
+                    max(prev.score, d.score),
+                )
+                continue
+        result.append(d)
+
+    # Numéro de maison resté seul après une adresse (« [ADRESSE] 3 »).
+    for i, d in enumerate(result):
+        if d.entity != "ADDRESS":
+            continue
+        tail = _HOUSE_NUMBER_TAIL_RE.match(text, d.end)
+        limit = result[i + 1].start if i + 1 < len(result) else len(text)
+        if tail and d.end < tail.end() <= limit:
+            d.end = tail.end()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Étape 6 : labels (pseudonymes numérotés pour les personnes)
+# ---------------------------------------------------------------------------
+
+def _name_parts(value: str) -> tuple[set[str], set[str]]:
+    """Sépare prénoms et noms de famille (« Jean DUPONT » → {JEAN}, {DUPONT})."""
+    tokens = []
+    for raw in re.split(r"[\s,;:()]+", value):
+        key = fold(raw).strip(".'’")
+        if key and key not in NAME_PARTICLES and len(key) >= 2:
+            tokens.append((raw, key))
+    if not tokens:
+        return set(), set()
+    uppers = [k for raw, k in tokens if raw.isupper()]
+    if uppers and len(uppers) < len(tokens):
+        return {k for raw, k in tokens if not raw.isupper()}, set(uppers)
+    if len(tokens) == 1:
+        return set(), {tokens[0][1]}
+    return {k for _, k in tokens[:-1]}, {tokens[-1][1]}
+
+
+def _assign_labels(text: str, detections: list[Detection]) -> list[Detection]:
+    """Attribue les labels ; un numéro stable par personne si ``PSEUDONYMS``."""
+    persons = [d for d in detections if d.entity == "PERSON"]
+    for d in detections:
+        d.label = get_label(d.entity)
+    if not PSEUDONYMS or not persons:
+        return detections
+
+    clusters: list[dict] = []  # {"firsts", "surnames", "first_pos"}
+    assignment: dict[int, int] = {}
+    parts = {id(d): _name_parts(text[d.start:d.end]) for d in persons}
+
+    # 1) Mentions complètes (prénom + nom) : elles définissent les personnes.
+    for d in persons:
+        firsts, surnames = parts[id(d)]
+        if not firsts:
+            continue
+        target = None
+        for i, c in enumerate(clusters):
+            if c["surnames"] & surnames and (not c["firsts"] or c["firsts"] & firsts):
+                target = i
+                break
+        if target is None:
+            clusters.append({"firsts": set(firsts), "surnames": set(surnames), "first_pos": d.start})
+            target = len(clusters) - 1
+        else:
+            clusters[target]["firsts"] |= firsts
+            clusters[target]["first_pos"] = min(clusters[target]["first_pos"], d.start)
+        assignment[id(d)] = target
+
+    # 2) Mentions partielles (« BERNARD », « Thomas ») : rattachées à la
+    #    personne correspondante la plus proche qui précède.
+    for d in persons:
+        if id(d) in assignment:
+            continue
+        _, keys = parts[id(d)]
+        candidates = [i for i, c in enumerate(clusters) if c["surnames"] & keys]
+        if not candidates:
+            candidates = [i for i, c in enumerate(clusters) if c["firsts"] & keys]
+        if candidates:
+            before = [i for i in candidates if clusters[i]["first_pos"] <= d.start]
+            target = max(before or candidates, key=lambda i: clusters[i]["first_pos"])
+            clusters[target]["first_pos"] = min(clusters[target]["first_pos"], d.start)
+        else:
+            clusters.append({"firsts": set(), "surnames": set(keys), "first_pos": d.start})
+            target = len(clusters) - 1
+        assignment[id(d)] = target
+
+    order = sorted(range(len(clusters)), key=lambda i: clusters[i]["first_pos"])
+    number = {cluster: n for n, cluster in enumerate(order, start=1)}
+    base = get_label("PERSON")
+    for d in persons:
+        d.label = f"{base}_{number[assignment[id(d)]]}"
+    return detections
+
+
+# ---------------------------------------------------------------------------
+# Listes blanche / noire (révision interactive)
+# ---------------------------------------------------------------------------
 
 def _normalize(s: str) -> str:
     """Normalise une chaîne pour comparaison (minuscule, espaces réduits)."""
     return " ".join(s.lower().split())
 
 
-def _add_missing_uppercase_names(text: str, detections: list[dict]) -> list[dict]:
-    """Ajoute les séquences de noms en majuscules non détectées par Presidio.
-
-    Reproduit, sous forme de détections, ce que ``replace_uppercase_names``
-    masquerait, afin qu'elles soient visibles et révisables dans l'interface.
-    """
-    occupied = [(d["start"], d["end"]) for d in detections]
-    for m in _UPPERCASE_NAME_RE.finditer(text):
-        if _is_legal_header(m.group(0)):
-            continue
-        if any(m.start() < e and s < m.end() for s, e in occupied):
-            continue  # chevauche une détection existante
-        detections.append(
-            _detection_dict(text, m.start(), m.end(), "FR_NOM_PROPRE", 1.0)
-        )
-    return detections
-
-
-def _apply_whitelist(detections: list[dict], whitelist: list[str]) -> list[dict]:
-    """Retire les détections correspondant à un terme de la liste blanche.
-
-    Une détection est conservée (= non masquée, donc retirée des détections)
-    si sa valeur contient un terme de la liste blanche, ou inversement.
-    """
+def _apply_whitelist(text: str, detections: list[Detection],
+                     whitelist: list[str] | None) -> list[Detection]:
+    """Retire les détections correspondant à un terme de la liste blanche."""
     terms = [_normalize(w) for w in (whitelist or []) if w.strip()]
     if not terms:
         return detections
     kept = []
     for d in detections:
-        val = _normalize(d["value"])
+        val = _normalize(text[d.start:d.end])
         if any(t in val or val in t for t in terms):
-            continue  # à garder en clair → on retire la détection
+            continue  # à garder en clair
         kept.append(d)
     return kept
 
 
-def _add_blocklist(text: str, detections: list[dict],
-                   blocklist: list[str]) -> list[dict]:
-    """Force le masquage des occurrences des termes de la liste noire.
-
-    Chaque occurrence (insensible à la casse) d'un terme de la liste noire
-    devient une détection ``CUSTOM`` → ``[CONFIDENTIEL]``, sauf si elle
-    chevauche une détection existante.
-    """
+def _add_blocklist(text: str, detections: list[Detection],
+                   blocklist: list[str] | None) -> list[Detection]:
+    """Force le masquage (``[CONFIDENTIEL]``) des termes de la liste noire."""
     terms = [t.strip() for t in (blocklist or []) if t.strip()]
-    if not terms:
-        return detections
-    occupied = [(d["start"], d["end"]) for d in detections]
     for term in terms:
         for m in re.finditer(re.escape(term), text, flags=re.IGNORECASE):
-            if any(m.start() < e and s < m.end() for s, e in occupied):
-                continue
-            det = _detection_dict(text, m.start(), m.end(), "CUSTOM", 1.0)
-            detections.append(det)
-            occupied.append((m.start(), m.end()))
+            detections.append(Detection(m.start(), m.end(), "CUSTOM", 1.0))
     return detections
 
 
-def _resolve_overlaps(detections: list[dict]) -> list[dict]:
-    """Trie les détections et retire les chevauchements (garde le meilleur score)."""
-    ordered = sorted(detections, key=lambda d: (d["start"], -d["score"]))
-    result: list[dict] = []
-    last_end = -1
-    for d in ordered:
-        if d["start"] >= last_end:
-            result.append(d)
-            last_end = d["end"]
-    return result
+# ---------------------------------------------------------------------------
+# Pipeline complet
+# ---------------------------------------------------------------------------
 
+def check_text_length(text: str) -> None:
+    """Lève :class:`TextTooLongError` si ``text`` dépasse la limite."""
+    if len(text) > settings.MAX_TEXT_CHARS:
+        raise TextTooLongError(len(text))
+
+
+def detect_entities(
+    text: str,
+    whitelist: list[str] | None = None,
+    blocklist: list[str] | None = None,
+    progress: Optional[ProgressCallback] = None,
+) -> list[Detection]:
+    """Détecte toutes les entités à masquer dans ``text``.
+
+    Renvoie des détections triées, sans chevauchement, avec leur label final.
+
+    Raises
+    ------
+    TextTooLongError
+        Texte plus long que ``settings.MAX_TEXT_CHARS``.
+    api.progress.Cancelled
+        Levée par ``progress`` pour interrompre l'analyse.
+    """
+    if not text or not text.strip():
+        return []
+    check_text_length(text)
+    analysis_text = text.translate(_SAME_LENGTH_SPACES)
+    protected = _protected_spans(analysis_text)
+    ocr_spans = _ocr_spans(analysis_text)
+
+    detections = _raw_detections(analysis_text, progress)
+    detections = _apply_thresholds(detections, ocr_spans)
+    detections = _trim_protected(analysis_text, detections, protected)
+    detections = _clean(analysis_text, detections)
+    detections = _detach_identifiers(analysis_text, detections)
+    detections = _add_uppercase_names(analysis_text, detections)
+    detections = _propagate_persons(analysis_text, detections)
+    detections = _trim_protected(analysis_text, detections, protected)
+    detections = _apply_whitelist(analysis_text, detections, whitelist)
+    detections = _add_blocklist(analysis_text, detections, blocklist)
+    detections = _merge_overlaps(detections)
+    detections = _merge_adjacent(analysis_text, detections)
+    detections = _trim_protected(analysis_text, detections, protected)
+    return _assign_labels(analysis_text, detections)
+
+
+def _replace(text: str, detections: list[Detection]) -> str:
+    parts: list[str] = []
+    last = 0
+    for d in sorted(detections, key=lambda d: d.start):
+        parts.append(text[last:d.start])
+        parts.append(f"[{d.label}]")
+        last = d.end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def anonymize_text(text: str, progress: Optional[ProgressCallback] = None) -> str:
+    """Analyse et anonymise un texte français / belge.
+
+    Chaque entité détectée est remplacée par un label entre crochets, par
+    exemple ``[PERSONNE_1]``, ``[ADRESSE]``, ``[REGISTRE_NATIONAL]``,
+    ``[DATE_NAISSANCE]``… Les noms propres en capitales non identifiés (ex :
+    « RENAUD TECH COMPANY ») sont remplacés par ``[Nom propre]``.
+
+    Parameters
+    ----------
+    text : str
+        Texte brut à anonymiser.
+    progress : callable, optional
+        Suivi d'avancement (étape ``analyze``), voir ``api.progress``.
+
+    Returns
+    -------
+    str
+        Texte anonymisé avec les labels de remplacement.
+
+    Raises
+    ------
+    TextTooLongError
+        Texte plus long que ``settings.MAX_TEXT_CHARS``.
+    """
+    return _replace(text, detect_entities(text, progress=progress))
+
+
+# ---------------------------------------------------------------------------
+# Analyse détaillée (couche de révision interactive)
+# ---------------------------------------------------------------------------
 
 def analyze_text_detailed(
     text: str,
@@ -605,13 +1222,14 @@ def analyze_text_detailed(
 ) -> dict:
     """Analyse un texte et renvoie les détections structurées (sans masquer).
 
-    Destinée à l'interface de révision : le frontend reçoit le texte original
-    et la liste des entités détectées, à valider ou refuser une par une.
+    Destinée à une interface de révision : le frontend reçoit le texte
+    original et la liste des entités détectées, à valider ou refuser une par
+    une.
 
     Parameters
     ----------
     text : str
-        Texte brut en français à analyser.
+        Texte brut à analyser.
     whitelist : list[str], optional
         Termes à toujours conserver en clair (retirés des détections).
     blocklist : list[str], optional
@@ -623,32 +1241,35 @@ def analyze_text_detailed(
         ``{"text": <original>, "detections": [{start, end, type, label,
         score, value}, ...]}`` (détections triées, sans chevauchement).
     """
-    results = analyzer.analyze(
-        text=text, language="fr", score_threshold=SCORE_THRESHOLD,
-    )
-    results = [r for r in results if r.entity_type not in ENTITIES_TO_SKIP]
-    results = filter_legal_headers(text, results)
-    results = override_uppercase_entities(text, results)
-
-    detections = [
-        _detection_dict(text, r.start, r.end, r.entity_type, r.score)
-        for r in results
-    ]
-    detections = _add_missing_uppercase_names(text, detections)
-    detections = _apply_whitelist(detections, whitelist)
-    detections = _add_blocklist(text, detections, blocklist)
-    detections = _resolve_overlaps(detections)
-
-    return {"text": text, "detections": detections}
+    detections = detect_entities(text, whitelist, blocklist)
+    return {
+        "text": text,
+        "detections": [
+            {
+                "start": d.start,
+                "end": d.end,
+                "type": d.entity,
+                "label": d.label,
+                "score": round(float(d.score), 3),
+                "value": text[d.start:d.end],
+            }
+            for d in detections
+        ],
+    }
 
 
 def apply_detections(text: str, detections: list[dict]) -> str:
     """Reconstruit le texte en remplaçant chaque détection par son label.
 
-    Applique les remplacements de droite à gauche pour préserver les indices.
-    Utilisé côté serveur (tests, fichiers) ; le frontend de révision fait
-    le même calcul côté client pour l'interactivité.
+    Les détections doivent être sans chevauchement (c'est le cas de celles
+    renvoyées par :func:`analyze_text_detailed`). Le texte est reconstruit en
+    une seule passe, quel que soit le nombre de détections.
     """
-    for d in sorted(detections, key=lambda d: d["start"], reverse=True):
-        text = text[: d["start"]] + f'[{d["label"]}]' + text[d["end"]:]
-    return text
+    parts: list[str] = []
+    last = 0
+    for d in sorted(detections, key=lambda d: d["start"]):
+        parts.append(text[last:d["start"]])
+        parts.append(f'[{d["label"]}]')
+        last = d["end"]
+    parts.append(text[last:])
+    return "".join(parts)

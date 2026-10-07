@@ -5,5 +5,8 @@ numpy<2.0.0
 https://github.com/explosion/spacy-models/releases/download/fr_core_news_md-3.7.0/fr_core_news_md-3.7.0-py3-none-any.whl
 PyMuPDF==1.25.3
 python-docx==1.1.2
+# Préparation des images pour l'OCR (le moteur OCR Tesseract est un binaire
+# système : voir README, section « OCR »).
+Pillow>=10.4,<12
 flask
 flask-cors

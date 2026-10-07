@@ -3,7 +3,7 @@
 Lancement :
     gunicorn -c gunicorn.conf.py api.index:app
 
-Le module ``api.index`` expose l'objet Flask ``app`` (le bloc ``app.run(...)``
+Le module ``api.index`` expose l'objet Flask ``app`` (le bloc ``__main__``
 n'est utilisé qu'en développement local via ``npm run dev:api``).
 """
 
@@ -18,15 +18,26 @@ pythonpath = "."
 
 # CamemBERT (~1 Go en RAM) est chargé une seule fois à l'import du moteur NLP.
 # preload_app charge l'application dans le process maître AVANT le fork, ce qui
-# partage la mémoire du modèle entre les workers. On garde peu de workers car
-# le modèle est lourd ; ajustable via la variable d'env WEB_CONCURRENCY.
+# partage la mémoire du modèle entre les workers.
+#
+# Un seul worker par défaut : le NER et l'OCR utilisent déjà tous les cœurs,
+# et la coordination des calculs (api/compute.py) ainsi que la file d'attente
+# des fichiers (ANON_MAX_PARALLEL_JOBS) s'appliquent au sein d'un processus.
 preload_app = True
 workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
-threads = 2
 
-# L'inférence et les gros fichiers peuvent être lents : timeout large.
-timeout = 120
-graceful_timeout = 30
+# Threads « gthread » : un fichier en cours de traitement occupe un thread
+# pendant toute la durée de son flux de progression (plusieurs minutes pour
+# un gros PDF scanné) ; les autres threads servent les autres requêtes
+# (fichiers en file d'attente, texte, /api/health). Le calcul lui-même a lieu
+# dans des threads dédiés, limités par ANON_MAX_PARALLEL_JOBS.
+worker_class = "gthread"
+threads = int(os.environ.get("GUNICORN_THREADS", "8"))
+
+# Avec gthread, `timeout` surveille la santé du worker (pas la durée d'une
+# requête) : un long traitement n'est donc pas interrompu.
+timeout = 300
+graceful_timeout = 60
 
 # Logs vers stdout/stderr (récupérés par le daemon Forge / supervisor).
 accesslog = "-"

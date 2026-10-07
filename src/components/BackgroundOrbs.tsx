@@ -27,8 +27,8 @@ export default function BackgroundOrbs() {
             ctx.scale(dpr, dpr);
         };
 
-        resize();
-        window.addEventListener("resize", resize);
+        // Accessibilité : « réduire les animations » → une image fixe.
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
         // Number of horizontal lines making up the mesh
         const linesCount = 50;
@@ -87,14 +87,29 @@ export default function BackgroundOrbs() {
                 ctx.stroke();
             }
 
-            animationId.current = requestAnimationFrame(draw);
+            if (!reducedMotion.matches) {
+                animationId.current = requestAnimationFrame(draw);
+            }
         };
 
+        const restart = () => {
+            cancelAnimationFrame(animationId.current);
+            draw();
+        };
+        const onResize = () => {
+            resize();
+            if (reducedMotion.matches) draw(); // image fixe redessinée à la nouvelle taille
+        };
+
+        resize();
         draw();
+        window.addEventListener("resize", onResize);
+        reducedMotion.addEventListener("change", restart);
 
         return () => {
             cancelAnimationFrame(animationId.current);
-            window.removeEventListener("resize", resize);
+            window.removeEventListener("resize", onResize);
+            reducedMotion.removeEventListener("change", restart);
         };
     }, []);
 

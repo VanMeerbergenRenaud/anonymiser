@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useCallback, useRef, type DragEvent, type ChangeEvent } from "react";
+import { useState, useCallback, useEffect, useRef, type DragEvent, type ChangeEvent } from "react";
+import {
+    AbortedError,
+    MAX_FILE_MB,
+    MAX_FILE_SIZE,
+    anonymizeFile,
+    type FileProgress,
+} from "@/lib/anonymizeFile";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,9 +19,15 @@ interface TrackedFile {
     id: string;
     file: File;
     status: FileStatus;
+    /** Dernier avancement connu (envoi, file d'attente, étape du serveur). */
+    progress?: FileProgress;
     error?: string;
     downloadUrl?: string;
     downloadName?: string;
+    /** Nombre d'images dont le texte a été lu par OCR. */
+    ocrImages?: number;
+    /** Nombre d'images non analysées (OCR indisponible, format, limite). */
+    ocrSkipped?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -22,8 +35,19 @@ interface TrackedFile {
 // ---------------------------------------------------------------------------
 
 const MAX_FILES = 8;
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 Mo
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+/**
+ * Fichiers traités simultanément : le serveur traite de toute façon un
+ * nombre limité de fichiers à la fois (les autres attendent leur tour).
+ */
+const MAX_CONCURRENT = 2;
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".jfif", ".tif", ".tiff", ".bmp", ".gif", ".webp"];
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ...IMAGE_EXTENSIONS];
+
+const STAGE_LABELS = {
+    extract: "Lecture du document",
+    ocr: "Lecture des images (OCR)",
+    analyze: "Anonymisation",
+} as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,71 +64,118 @@ function uid(): string {
     return Math.random().toString(36).slice(2, 10);
 }
 
+/** Taille lisible : « 850 Ko », « 12,4 Mo ». */
+function formatSize(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.ceil(bytes / 1024))} Ko`;
+    return `${(bytes / (1024 * 1024)).toLocaleString("fr-BE", { maximumFractionDigits: 1 })} Mo`;
+}
+
+/** Libellé et fraction (0–1, ou null si indéterminée) d'un fichier en cours. */
+function describeProgress(tf: TrackedFile): { label: string; fraction: number | null } {
+    if (tf.status === "pending") return { label: "En attente…", fraction: null };
+    const p = tf.progress;
+    if (!p) return { label: "Préparation…", fraction: null };
+    switch (p.kind) {
+        case "upload":
+            return { label: `Envoi… ${Math.floor(p.fraction * 100)} %`, fraction: p.fraction };
+        case "waiting":
+            return { label: "Traitement…", fraction: null };
+        case "queued":
+            return { label: "En file d'attente sur le serveur…", fraction: null };
+        case "stage": {
+            const fraction = p.total > 0 ? Math.min(1, p.done / p.total) : null;
+            if (p.stage === "analyze" || fraction === null) {
+                const percent = fraction === null ? "" : ` ${Math.floor(fraction * 100)} %`;
+                return { label: `${STAGE_LABELS[p.stage]}…${percent}`, fraction };
+            }
+            const unit = p.stage === "ocr" ? "image" : "page";
+            return {
+                label: `${STAGE_LABELS[p.stage]} : ${unit} ${Math.min(p.done + 1, p.total)} / ${p.total}`,
+                fraction,
+            };
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 /**
  * Onglet "Fichiers" : zone de drag-and-drop pour uploader des fichiers
- * (PDF, DOCX, TXT) et les anonymiser automatiquement.
+ * (PDF, DOCX, TXT, images) et les anonymiser automatiquement. Le texte
+ * contenu dans les images est lu par OCR côté serveur.
  */
 export default function FileTab() {
     const [files, setFiles] = useState<TrackedFile[]>([]);
     const [isDragOver, setIsDragOver] = useState(false);
+    const [notice, setNotice] = useState("");
     const inputRef = useRef<HTMLInputElement>(null);
+
+    // File d'attente côté client (au plus MAX_CONCURRENT envois simultanés).
+    const queue = useRef<TrackedFile[]>([]);
+    const active = useRef(0);
+    const aborts = useRef(new Map<string, () => void>());
+    const objectUrls = useRef(new Set<string>());
+
+    const update = useCallback((id: string, patch: Partial<TrackedFile>) => {
+        setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+    }, []);
+
+    // Au démontage : annule les traitements en cours et libère les résultats.
+    useEffect(() => {
+        const pendingAborts = aborts.current;
+        const urls = objectUrls.current;
+        return () => {
+            queue.current = [];
+            pendingAborts.forEach((abort) => abort());
+            urls.forEach((url) => URL.revokeObjectURL(url));
+        };
+    }, []);
 
     // -----------------------------------------------------------------------
     // Traitement d'un fichier
     // -----------------------------------------------------------------------
 
-    const processFile = useCallback(async (tracked: TrackedFile) => {
-        setFiles((prev) =>
-            prev.map((f) =>
-                f.id === tracked.id ? { ...f, status: "processing" as FileStatus } : f
-            )
-        );
-
-        try {
-            const formData = new FormData();
-            formData.append("file", tracked.file);
-
-            const res = await fetch("/api/anonymize_file", {
-                method: "POST",
-                body: formData,
-            });
-
-            if (!res.ok) {
-                const text = await res.text();
-                let errMsg = `Erreur ${res.status}`;
-                try {
-                    const err = JSON.parse(text);
-                    if (err.error) errMsg = err.error;
-                } catch {
-                    errMsg = `Erreur de connexion au serveur (${res.status}). Veuillez vérifier que le serveur backend est lancé.`;
-                }
-                throw new Error(errMsg);
+    const run = useCallback(
+        async (tracked: TrackedFile) => {
+            update(tracked.id, { status: "processing", progress: undefined });
+            const job = anonymizeFile(tracked.file, (progress) => update(tracked.id, { progress }));
+            aborts.current.set(tracked.id, job.abort);
+            try {
+                const result = await job.promise;
+                const blob = new Blob([result.content], { type: "text/plain;charset=utf-8" });
+                const url = URL.createObjectURL(blob);
+                objectUrls.current.add(url);
+                update(tracked.id, {
+                    status: "done",
+                    progress: undefined,
+                    downloadUrl: url,
+                    downloadName: result.filename,
+                    ocrImages: result.ocrImages,
+                    ocrSkipped: result.ocrSkipped,
+                });
+            } catch (e: unknown) {
+                if (e instanceof AbortedError) return; // fichier retiré de la liste
+                const msg = e instanceof Error ? e.message : "Erreur inconnue";
+                update(tracked.id, { status: "error", progress: undefined, error: msg });
+            } finally {
+                aborts.current.delete(tracked.id);
             }
+        },
+        [update]
+    );
 
-            const blob = await res.blob();
-            const filename = res.headers.get("X-Filename") || "a-" + tracked.file.name;
-            const url = URL.createObjectURL(blob);
-
-            setFiles((prev) =>
-                prev.map((f) =>
-                    f.id === tracked.id
-                        ? { ...f, status: "done" as FileStatus, downloadUrl: url, downloadName: filename }
-                        : f
-                )
-            );
-        } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : "Erreur inconnue";
-            setFiles((prev) =>
-                prev.map((f) =>
-                    f.id === tracked.id ? { ...f, status: "error" as FileStatus, error: msg } : f
-                )
-            );
+    const pump = useCallback(() => {
+        while (active.current < MAX_CONCURRENT && queue.current.length > 0) {
+            const next = queue.current.shift()!;
+            active.current += 1;
+            void run(next).finally(() => {
+                active.current -= 1;
+                pump();
+            });
         }
-    }, []);
+    }, [run]);
 
     // -----------------------------------------------------------------------
     // Ajout de fichiers
@@ -112,36 +183,45 @@ export default function FileTab() {
 
     const addFiles = useCallback(
         (incoming: FileList | File[]) => {
-            const allowed = MAX_FILES - files.length;
-            if (allowed <= 0) return;
+            const all = Array.from(incoming);
+            const allowed = Math.max(0, MAX_FILES - files.length);
+            const list = all.slice(0, allowed);
+            const ignored = all.length - list.length;
+            setNotice(
+                ignored > 0
+                    ? `Maximum ${MAX_FILES} fichiers à la fois : ${ignored} fichier${ignored > 1 ? "s" : ""} ignoré${ignored > 1 ? "s" : ""}.`
+                    : ""
+            );
+            if (list.length === 0) return;
 
-            const newFiles: TrackedFile[] = [];
-            const list = Array.from(incoming).slice(0, allowed);
-
-            for (const file of list) {
+            const newFiles: TrackedFile[] = list.map((file) => {
                 const ext = getExtension(file.name);
-                if (!ACCEPTED_EXTENSIONS.includes(ext)) continue;
+                if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+                    const error =
+                        ext === ".doc" || ext === ".odt" || ext === ".rtf"
+                            ? "Format non pris en charge : enregistrez-le en .docx ou .pdf"
+                            : "Format non pris en charge";
+                    return { id: uid(), file, status: "error", error };
+                }
                 if (file.size > MAX_FILE_SIZE) {
-                    newFiles.push({
+                    return {
                         id: uid(),
                         file,
                         status: "error",
-                        error: "Fichier trop volumineux (max 10 Mo)",
-                    });
-                    continue;
+                        error: `Fichier trop volumineux (max ${MAX_FILE_MB} Mo)`,
+                    };
                 }
-                newFiles.push({ id: uid(), file, status: "pending" });
-            }
+                if (file.size === 0) {
+                    return { id: uid(), file, status: "error", error: "Fichier vide" };
+                }
+                return { id: uid(), file, status: "pending" };
+            });
 
-            if (newFiles.length === 0) return;
             setFiles((prev) => [...prev, ...newFiles]);
-
-            // Lancer le traitement automatiquement
-            for (const tf of newFiles) {
-                if (tf.status === "pending") processFile(tf);
-            }
+            queue.current.push(...newFiles.filter((f) => f.status === "pending"));
+            pump();
         },
-        [files.length, processFile]
+        [files.length, pump]
     );
 
     // -----------------------------------------------------------------------
@@ -167,21 +247,25 @@ export default function FileTab() {
         [addFiles]
     );
 
-    const removeFile = (id: string) => {
-        setFiles((prev) => {
-            const target = prev.find((f) => f.id === id);
-            if (target?.downloadUrl) URL.revokeObjectURL(target.downloadUrl);
-            return prev.filter((f) => f.id !== id);
-        });
-    };
+    /** Annule (si besoin) et oublie les fichiers indiqués. */
+    const discard = useCallback((targets: TrackedFile[]) => {
+        const ids = new Set(targets.map((f) => f.id));
+        queue.current = queue.current.filter((f) => !ids.has(f.id));
+        for (const f of targets) {
+            aborts.current.get(f.id)?.();
+            if (f.downloadUrl) {
+                URL.revokeObjectURL(f.downloadUrl);
+                objectUrls.current.delete(f.downloadUrl);
+            }
+        }
+        setFiles((prev) => prev.filter((f) => !ids.has(f.id)));
+    }, []);
+
+    const removeFile = (tf: TrackedFile) => discard([tf]);
 
     const clearFiles = () => {
-        setFiles((prev) => {
-            prev.forEach((f) => {
-                if (f.downloadUrl) URL.revokeObjectURL(f.downloadUrl);
-            });
-            return [];
-        });
+        discard(files);
+        setNotice("");
     };
 
     const downloadAll = () => {
@@ -205,6 +289,9 @@ export default function FileTab() {
         <div className="flex flex-col h-full">
             {/* Zone de dépôt */}
             <div
+                role="button"
+                tabIndex={0}
+                aria-label="Ajouter des fichiers à anonymiser"
                 onDragOver={(e) => {
                     e.preventDefault();
                     setIsDragOver(true);
@@ -212,7 +299,13 @@ export default function FileTab() {
                 onDragLeave={() => setIsDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => inputRef.current?.click()}
-                className={`border border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${isDragOver
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        inputRef.current?.click();
+                    }
+                }}
+                className={`border border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 ${isDragOver
                     ? "border-foreground bg-neutral-50"
                     : "border-border hover:border-neutral-400 bg-white"
                     }`}
@@ -220,7 +313,7 @@ export default function FileTab() {
                 <input
                     ref={inputRef}
                     type="file"
-                    accept=".pdf,.docx,.txt"
+                    accept={ACCEPTED_EXTENSIONS.join(",")}
                     multiple
                     onChange={handleFileInput}
                     className="hidden"
@@ -238,11 +331,20 @@ export default function FileTab() {
                             Déposez vos fichiers ici
                         </p>
                         <p className="text-muted text-xs">
-                            PDF, DOCX, TXT (max {MAX_FILES} fichiers, 10 Mo)
+                            PDF, DOCX, TXT, images (max {MAX_FILES} fichiers, {MAX_FILE_MB} Mo chacun)
+                        </p>
+                        <p className="text-muted text-[11px] mt-1">
+                            Le texte présent dans les images est lu automatiquement (OCR)
                         </p>
                     </div>
                 </div>
             </div>
+
+            {notice && (
+                <p className="mt-3 text-[12px] text-amber-700" role="status">
+                    {notice}
+                </p>
+            )}
 
             {/* Liste des fichiers */}
             {files.length > 0 && (
@@ -268,77 +370,116 @@ export default function FileTab() {
                     </div>
 
                     <div className="space-y-2 overflow-y-auto pr-2 pb-2">
-                        {files.map((tf) => (
-                            <div
-                                key={tf.id}
-                                className="group flex items-center justify-between border border-border bg-white rounded-lg px-4 py-3 text-sm hover:border-neutral-300 transition-colors"
-                            >
-                                <div className="flex items-center gap-3 min-w-0 flex-1">
-                                    {/* Indicateur de statut avec SVG minimalistes */}
-                                    {tf.status === "processing" && (
-                                        <svg className="shrink-0 w-4 h-4 text-neutral-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                    )}
-                                    {tf.status === "done" && (
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-green-600">
-                                            <polyline points="20 6 9 17 4 12" />
-                                        </svg>
-                                    )}
-                                    {tf.status === "error" && (
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-red-500">
-                                            <line x1="18" y1="6" x2="6" y2="18" />
-                                            <line x1="6" y1="6" x2="18" y2="18" />
-                                        </svg>
-                                    )}
-                                    {tf.status === "pending" && (
-                                        <div className="shrink-0 w-4 h-4 rounded-full border border-neutral-200" />
-                                    )}
+                        {files.map((tf) => {
+                            const inProgress = tf.status === "pending" || tf.status === "processing";
+                            const progress = inProgress ? describeProgress(tf) : null;
+                            return (
+                                <div
+                                    key={tf.id}
+                                    className="group flex items-center justify-between border border-border bg-white rounded-lg px-4 py-3 text-sm hover:border-neutral-300 transition-colors"
+                                >
+                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                        {/* Indicateur de statut avec SVG minimalistes */}
+                                        {tf.status === "processing" && (
+                                            <svg className="shrink-0 w-4 h-4 text-neutral-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                        )}
+                                        {tf.status === "done" && (
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-green-600">
+                                                <polyline points="20 6 9 17 4 12" />
+                                            </svg>
+                                        )}
+                                        {tf.status === "error" && (
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-red-500">
+                                                <line x1="18" y1="6" x2="6" y2="18" />
+                                                <line x1="6" y1="6" x2="18" y2="18" />
+                                            </svg>
+                                        )}
+                                        {tf.status === "pending" && (
+                                            <div className="shrink-0 w-4 h-4 rounded-full border border-neutral-200" />
+                                        )}
 
-                                    <div className="flex flex-col min-w-0">
-                                        <span className="truncate font-medium text-foreground text-[13px]">{tf.file.name}</span>
-                                        <span className="text-muted text-[11px]">
-                                            {Math.max(1, Math.ceil(tf.file.size / 1024))} Ko
-                                        </span>
+                                        <div className="flex flex-col min-w-0 flex-1">
+                                            <span className="truncate font-medium text-foreground text-[13px]">{tf.file.name}</span>
+                                            <span className="text-muted text-[11px]">
+                                                {formatSize(tf.file.size)}
+                                                {progress && <span>{" · "}{progress.label}</span>}
+                                                {!!tf.ocrImages && (
+                                                    <span
+                                                        className="text-amber-600"
+                                                        title="Texte extrait d'images par OCR : relisez les passages signalés dans le fichier"
+                                                    >
+                                                        {" · "}
+                                                        {tf.ocrImages} image{tf.ocrImages > 1 ? "s" : ""} lue{tf.ocrImages > 1 ? "s" : ""} par OCR (à vérifier)
+                                                    </span>
+                                                )}
+                                                {!!tf.ocrSkipped && (
+                                                    <span
+                                                        className="text-red-500"
+                                                        title="Certaines images n'ont pas pu être analysées (voir le fichier)"
+                                                    >
+                                                        {" · "}
+                                                        {tf.ocrSkipped} image{tf.ocrSkipped > 1 ? "s" : ""} non analysée{tf.ocrSkipped > 1 ? "s" : ""}
+                                                    </span>
+                                                )}
+                                            </span>
+                                            {progress && (
+                                                <div
+                                                    className="mt-1.5 h-1 w-full max-w-64 rounded-full bg-neutral-100 overflow-hidden"
+                                                    role="progressbar"
+                                                    aria-label={progress.label}
+                                                    aria-valuemin={0}
+                                                    aria-valuemax={100}
+                                                    aria-valuenow={progress.fraction === null ? undefined : Math.round(progress.fraction * 100)}
+                                                >
+                                                    <div
+                                                        className={`h-full rounded-full bg-neutral-400 transition-[width] duration-300 ${progress.fraction === null ? "w-1/3 animate-pulse" : ""}`}
+                                                        style={progress.fraction === null ? undefined : { width: `${Math.max(2, progress.fraction * 100)}%` }}
+                                                    />
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
 
-                                <div className="flex items-center gap-2.5 ml-5">
-                                    {tf.status === "done" && tf.downloadUrl && (
-                                        <a
-                                            href={tf.downloadUrl}
-                                            download={tf.downloadName}
-                                            className="text-muted hover:text-foreground transition-colors p-1 cursor-pointer"
-                                            title="Télécharger"
+                                    <div className="flex items-center gap-2.5 ml-5">
+                                        {tf.status === "done" && tf.downloadUrl && (
+                                            <a
+                                                href={tf.downloadUrl}
+                                                download={tf.downloadName}
+                                                className="text-muted hover:text-foreground transition-colors p-1 cursor-pointer"
+                                                title="Télécharger"
+                                                aria-label={`Télécharger ${tf.downloadName ?? "le fichier anonymisé"}`}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                                    <polyline points="7 10 12 15 17 10" />
+                                                    <line x1="12" y1="15" x2="12" y2="3" />
+                                                </svg>
+                                            </a>
+                                        )}
+                                        {tf.status === "error" && tf.error && (
+                                            <span className="text-[11px] text-red-500 max-w-40 truncate" title={tf.error}>
+                                                {tf.error}
+                                            </span>
+                                        )}
+                                        <button
+                                            onClick={() => removeFile(tf)}
+                                            className="text-muted hover:text-red-500 transition-colors p-1 cursor-pointer"
+                                            aria-label={inProgress ? "Annuler" : "Supprimer"}
+                                            title={inProgress ? "Annuler" : "Supprimer"}
                                         >
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                                <polyline points="7 10 12 15 17 10" />
-                                                <line x1="12" y1="15" x2="12" y2="3" />
+                                                <path d="M3 6h18" />
+                                                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
                                             </svg>
-                                        </a>
-                                    )}
-                                    {tf.status === "error" && tf.error && (
-                                        <span className="text-[11px] text-red-500 max-w-32 truncate" title={tf.error}>
-                                            {tf.error}
-                                        </span>
-                                    )}
-                                    <button
-                                        onClick={() => removeFile(tf.id)}
-                                        className="text-muted hover:text-red-500 transition-colors p-1 cursor-pointer"
-                                        aria-label="Supprimer"
-                                        title="Supprimer"
-                                    >
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M3 6h18" />
-                                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                                        </svg>
-                                    </button>
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
 
                     {/* Spacer block since clear files was moved to the top right */}
