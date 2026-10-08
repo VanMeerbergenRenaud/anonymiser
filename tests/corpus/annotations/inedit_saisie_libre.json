@@ -1,0 +1,42 @@
+{
+  "document": "inedit_saisie_libre.txt",
+  "set": "inédit",
+  "description": "Texte saisi librement : minuscules, prénom entre parenthèses, néerlandais (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "re:(?i)jean dupont",
+      "DUPONT",
+      "MARTIN-LEGRAND",
+      "Sophie",
+      "Peeters",
+      "Janssens",
+      "Dupont-Martin",
+      "Arthur",
+      "Zoé"
+    ],
+    "ADRESSE": [
+      "rue de la Station 4",
+      "5000 Namur"
+    ]
+  },
+  "keep": [
+    "ook",
+    "(8 ans)",
+    "(5 ans)",
+    "deux enfants"
+  ],
+  "same_label": [
+    [
+      "MARTIN-LEGRAND",
+      "({Sophie})"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Peeters",
+      "Janssens",
+      "Arthur",
+      "Zoé"
+    ]
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "document": "inedit_pv.txt",
+  "set": "inédit",
+  "description": "Procès-verbal d'audition fictif (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "DUBOIS",
+      "Marc",
+      "Rachid",
+      "Laetitia",
+      "Bernard",
+      "Lambert"
+    ],
+    "LIEU_NAISSANCE": [
+      "Seraing"
+    ],
+    "DATE_NAISSANCE": [
+      "21/09/1990"
+    ],
+    "CARTE_IDENTITÉ": [
+      "592-1234567-89"
+    ],
+    "ADRESSE": [
+      "rue Saint-Gilles 120"
+    ],
+    "RÉFÉRENCE_DOSSIER": [
+      "LI.55.L1.012345/2023",
+      "12345"
+    ]
+  },
+  "keep": [
+    "PROCÈS-VERBAL D'AUDITION",
+    "Zone de police Liège",
+    "Nom :",
+    "Prénom :",
+    "Date de naissance :",
+    "Lieu de naissance :",
+    "Carte d'identité :",
+    "INP",
+    "matricule"
+  ],
+  "same_label": [
+    [
+      "Nom : {DUBOIS}",
+      "Prénom : {Marc}"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Nom : {DUBOIS}",
+      "Rachid",
+      "Laetitia",
+      "Bernard",
+      "Lambert"
+    ]
+  ]
+}

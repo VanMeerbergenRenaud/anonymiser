@@ -245,6 +245,9 @@ class DocumentResult:
     words_total: int = 0
     words_lost: list[str] = field(default_factory=list)
     words_altered: list[str] = field(default_factory=list)
+    swallowed: list[str] = field(default_factory=list)
+    """Mots courants (minuscules) avalés dans le masque d'un nom : « loco »,
+    « enfant » dans « Maître [PERSONNE] » ou « L'[PERSONNE] »."""
     deterministic: Optional[bool] = None
 
     @property
@@ -259,7 +262,7 @@ class DocumentResult:
     def ok(self) -> bool:
         return bool(self.skipped) or not (
             self.leaks or self.keep_missing or self.label_errors
-            or self.fidelity_errors or self.deterministic is False
+            or self.fidelity_errors or self.swallowed or self.deterministic is False
         )
 
     def as_dict(self) -> dict:
@@ -271,7 +274,7 @@ class DocumentResult:
             "label_errors": self.label_errors, "fidelity_checks": self.fidelity_checks,
             "fidelity_errors": self.fidelity_errors, "words_total": self.words_total,
             "words_lost": self.words_lost, "words_altered": self.words_altered,
-            "deterministic": self.deterministic,
+            "swallowed": self.swallowed, "deterministic": self.deterministic,
         }
 
 
@@ -301,12 +304,36 @@ def _labels_for(mention: str, text: str, detections) -> list[Optional[str]]:
     return labels
 
 
+_NAME_TYPES = {"PERSON", "FR_NOM_PROPRE", "ORGANIZATION"}
+_SWALLOW_OK = {
+    "de", "du", "des", "la", "le", "les", "van", "von", "der", "den", "ter", "ten", "vanden",
+    "vander", "vande", "di", "da", "del", "della", "dos", "das", "zu", "op", "het", "d", "l",
+    "et", "y", "e", "a",
+}
+"""Particules et mots qui peuvent faire partie d'un nom (« van der Linden »,
+« Dupont & Fils »)."""
+
+
+def swallowed_words(text: str, detections) -> list[str]:
+    """Mots en minuscules masqués comme partie d'un nom de personne ou d'un
+    nom propre : un mot courant ainsi avalé est perdu pour le lecteur
+    (« Maître [PERSONNE_4] » au lieu de « Maître X loco Maître Y »)."""
+    found = []
+    for d in detections:
+        if d.entity not in _NAME_TYPES:
+            continue
+        for word in re.findall(r"[^\W\d_]+", text[d.start:d.end]):
+            if word.islower() and word not in _SWALLOW_OK:
+                found.append(word)
+    return found
+
+
 def evaluate_document(annotation: dict, check_determinism: bool = True) -> DocumentResult:
     from api import ocr
     from api.anonymize_file import process_file
 
     name = annotation["document"]
-    result = DocumentResult(name)
+    result = DocumentResult(name + (" (inédit)" if annotation.get("set") == "inédit" else ""))
     if annotation.get("needs_ocr") and not ocr.is_available():
         result.skipped = "OCR indisponible"
         return result
@@ -365,6 +392,8 @@ def evaluate_document(annotation: dict, check_determinism: bool = True) -> Docum
                         result.label_errors.append(
                             f"personnes distinctes : {group[i]!r} et {group[j]!r} → {sorted(common)}")
 
+    result.swallowed = swallowed_words(extracted, detections)
+
     # Fidélité
     for value in annotation.get("present", []):
         result.fidelity_checks += 1
@@ -400,33 +429,34 @@ def _pct(part: int, total: int) -> str:
 def format_report(results: list[DocumentResult], verbose: bool = True) -> str:
     lines = [
         "| Document | Fuites | Sur-anonymisation | Pseudonymes (erreurs) | Fidélité (erreurs) "
-        "| Mots perdus / altérés | Déterministe | Durée |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Mots perdus / altérés | Mots avalés | Déterministe | Durée |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     totals = Counter()
     for r in results:
         if r.skipped:
-            lines.append(f"| {r.name} | ignoré ({r.skipped}) | | | | | | |")
+            lines.append(f"| {r.name} | ignoré ({r.skipped}) | | | | | | | |")
             continue
         totals.update(mask=r.mask_total, leaked=r.leaked, keep=r.keep_total, missing=r.missing,
                       labels=r.label_checks, label_errors=len(r.label_errors),
                       fidelity=r.fidelity_checks, fidelity_errors=len(r.fidelity_errors),
                       words=r.words_total, lost=len(r.words_lost), altered=len(r.words_altered),
-                      seconds=r.seconds)
+                      swallowed=len(r.swallowed), seconds=r.seconds)
         det = "—" if r.deterministic is None else ("oui" if r.deterministic else "NON")
         words = f"{len(r.words_lost)} / {len(r.words_altered)}" if r.words_total else "—"
         lines.append(
             f"| {r.name} | {r.leaked}/{r.mask_total} ({_pct(r.leaked, r.mask_total)}) "
             f"| {r.missing}/{r.keep_total} ({_pct(r.missing, r.keep_total)}) "
             f"| {len(r.label_errors)}/{r.label_checks} | {len(r.fidelity_errors)}/{r.fidelity_checks} "
-            f"| {words} | {det} | {r.seconds:.1f} s |"
+            f"| {words} | {len(r.swallowed)} | {det} | {r.seconds:.1f} s |"
         )
     lines.append(
         f"| **Total** | **{totals['leaked']}/{totals['mask']} ({_pct(totals['leaked'], totals['mask'])})** "
         f"| **{totals['missing']}/{totals['keep']} ({_pct(totals['missing'], totals['keep'])})** "
         f"| **{totals['label_errors']}/{totals['labels']}** "
         f"| **{totals['fidelity_errors']}/{totals['fidelity']}** "
-        f"| **{totals['lost']} / {totals['altered']}** | | **{totals['seconds']:.1f} s** |"
+        f"| **{totals['lost']} / {totals['altered']}** | **{totals['swallowed']}** | "
+        f"| **{totals['seconds']:.1f} s** |"
     )
     if verbose:
         for r in results:
@@ -436,6 +466,8 @@ def format_report(results: list[DocumentResult], verbose: bool = True) -> str:
             details += [f"  - {e}" for e in r.label_errors + r.fidelity_errors]
             if r.words_lost:
                 details.append(f"  - mots perdus : {r.words_lost[:40]}")
+            if r.swallowed:
+                details.append(f"  - mots avalés dans un nom : {r.swallowed[:40]}")
             if r.words_altered:
                 details.append(f"  - mots altérés : {r.words_altered[:40]}")
             if details:

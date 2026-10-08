@@ -27,4 +27,5 @@ def test_corpus_document(annotation):
     assert not result.fidelity_errors, result.fidelity_errors
     assert not result.words_lost, f"mots perdus : {result.words_lost}"
     assert not result.words_altered, f"mots altérés : {result.words_altered}"
+    assert not result.swallowed, f"mots avalés dans un nom : {result.swallowed}"
     assert result.deterministic, "deux traitements du même fichier diffèrent"

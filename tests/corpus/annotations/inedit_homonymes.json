@@ -1,0 +1,55 @@
+{
+  "document": "inedit_homonymes.txt",
+  "set": "inédit",
+  "description": "Homonymes et pseudonymes (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "BEN SAÏD",
+      "Ben Saïd",
+      "Fatima",
+      "D'HONDT",
+      "D'Hondt",
+      "Marc",
+      "Anne",
+      "Leroy",
+      "Lambert",
+      "Hublet"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "son mari",
+    "le père de l'avocate",
+    "Le Président, Le Greffier,"
+  ],
+  "same_label": [
+    [
+      "Fatima BEN SAÏD",
+      "Madame {Ben Saïd}"
+    ],
+    [
+      "Marc D'HONDT",
+      "Monsieur {D'Hondt}"
+    ],
+    [
+      "Me {Anne Leroy}",
+      "Me {A. Leroy}"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Fatima BEN SAÏD",
+      "Marc D'HONDT"
+    ],
+    [
+      "Me {Anne Leroy}",
+      "Monsieur {Leroy}"
+    ],
+    [
+      "re:M\\. Lambert",
+      "P. Hublet"
+    ]
+  ]
+}

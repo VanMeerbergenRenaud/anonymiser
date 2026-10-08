@@ -1,0 +1,119 @@
+{
+  "document": "inedit_famille.txt",
+  "set": "inédit",
+  "description": "Jugement fictif du tribunal de la famille (jeu inédit : non utilisé pour régler le code avant sa mesure).",
+  "mask": {
+    "PERSONNE": [
+      "LEMAIRE",
+      "Lemaire",
+      "Sophie",
+      "VANDENBERGHE",
+      "Vandenberghe",
+      "Kevin",
+      "DEBROUX",
+      "Charlotte",
+      "Lebrun",
+      "Pierre",
+      "Lejeune",
+      "Anne",
+      "Lucas",
+      "Emma",
+      "Blanche",
+      "Roux",
+      "Josiane",
+      "Marot"
+    ],
+    "LIEU_NAISSANCE": [
+      "re:né à (Eupen)"
+    ],
+    "ADRESSE": [
+      "rue des Écoles 14",
+      "4800 Verviers",
+      "Clos des Lilas 3",
+      "4830 Limbourg",
+      "boulevard d'Avroy 38",
+      "4000 Liège"
+    ],
+    "DATE_NAISSANCE": [
+      "12.03.1985",
+      "4 juillet 1983",
+      "4 juin 2015",
+      "2 février 2018"
+    ],
+    "REGISTRE_NATIONAL": [
+      "85.03.12-284.53"
+    ],
+    "EMAIL": [
+      "c.debroux@avocat.be"
+    ],
+    "TÉLÉPHONE": [
+      "04/223.45.67",
+      "0499 12 34 56"
+    ],
+    "IBAN": [
+      "BE68 5390 0754 7034"
+    ],
+    "PLAQUE": [
+      "1-ABC-123"
+    ],
+    "NUMÉRO_RÔLE": [
+      "23/1456/A"
+    ],
+    "RÉFÉRENCE_DOSSIER": [
+      "2024/0789"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "TRIBUNAL DE PREMIÈRE INSTANCE DE LIÈGE, DIVISION VERVIERS",
+    "Tribunal de la famille",
+    "avocats à Verviers",
+    "Code civil",
+    "loi du 19 mars 2010",
+    "C.14.0234.F",
+    "ECLI:BE:CASS:2015:ARR.20150512.1",
+    "3 mai 2024",
+    "14 juin 2024",
+    "loco",
+    "L'enfant",
+    "Le greffier,",
+    "La juge,",
+    "grand-mère maternelle"
+  ],
+  "same_label": [
+    [
+      "LEMAIRE Sophie",
+      "Sophie LEMAIRE",
+      "Mme {Lemaire}"
+    ],
+    [
+      "VANDENBERGHE Kevin",
+      "Kevin VANDENBERGHE",
+      "Monsieur {Vandenberghe}",
+      "{Kevin} ne paie"
+    ],
+    [
+      "Blanche Roux",
+      "B. Roux"
+    ],
+    [
+      "J.-F. Marot"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Sophie LEMAIRE",
+      "Kevin VANDENBERGHE",
+      "Charlotte DEBROUX",
+      "Pierre Lebrun",
+      "Anne Lejeune",
+      "Blanche Roux",
+      "Josiane Lemaire",
+      "J.-F. Marot",
+      "parents de {Lucas}",
+      "{Emma}"
+    ]
+  ]
+}
