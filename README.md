@@ -10,14 +10,15 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
     `--- Texte extrait d'une image (attention) ---` … `--- Fin du texte extrait de l'image ---`, car l'OCR peut contenir des erreurs : à relire.
     Les logos, sceaux, signatures et photos sans texte ne produisent rien (filtre de qualité calibré sur Tesseract 4.1 et 5.x), mais les textes courts nets sont lus (tampon « RG 21/123/A », numéro de carte).
   - **Texte fidèle** : les PDF sont reconstruits ligne à ligne (paragraphes, titres et puces séparés, double interligne recollé, traits d'union conservés — « avocat-intermédiaire » —, césures recollées, colonnes de signatures séparées par une tabulation) ; les en-têtes et pieds de page répétés ne sont gardés qu'une fois et les numéros de page retirés. La numérotation automatique de Word (« 1. », « a) », puces) est restituée.
-  - Déposez jusqu'à 8 fichiers simultanément (**max 100 Mo chacun**). Le résultat est toujours un fichier `.txt`.
+  - Déposez jusqu'à 8 fichiers simultanément (**max 100 Mo chacun**). Le résultat est toujours un fichier **Markdown (`.md`)**, prêt à être donné à une IA : titres Word en `#`, tableaux Word en tableaux Markdown (colonnes alignées, cellules vides conservées), un paragraphe par bloc ; seuls les blancs changent, jamais un mot.
   - **Suivi en direct** : progression de l'envoi, puis de chaque étape (lecture des pages, OCR image par image, anonymisation). Retirer un fichier en cours annule son traitement sur le serveur.
+- **Mots à relire** : sous chaque fichier (et sous le texte anonymisé), une liste repliable « N mots à relire avant usage » signale, sans rien modifier, ce qui mérite un coup d'œil : noms cités dans une jurisprudence, lieux et organisations conservés, mots à majuscule non masqués qui ressemblent à un nom, mot en minuscules après une civilité. Les institutions, pays, sièges de juridiction et références publiques ne sont jamais signalés.
 - **Anonymisation de Texte Libre** : Collez un texte directement dans l'interface pour une anonymisation instantanée.
 - **Entités Détectées** (Belgique et France) — politique détaillée ci-dessous :
-  - Personnes physiques (parties, avocats, magistrats, greffiers, experts, témoins, enfants), numérotées de façon cohérente dans tout le document (`[PERSONNE_1]`, `[PERSONNE_2]`…). L'initiale accolée au nom fait partie du masque (« N. Dupont » → `[PERSONNE_2]`). Deux personnes ne partagent jamais une étiquette : « P. Dupont » et « N. Dupont », ou « Monsieur Jean DUPONT » et « Madame Marie DUPONT », restent distincts ; « Madame DUPONT » est rattachée à l'épouse. Initiales seules désignant une personne (« P.V. et G.G., assistés de leur avocat », « Madame F.M. ») : masquées. Noms en capitales non identifiés : `[Nom propre]`.
+  - Personnes physiques (parties, avocats, magistrats, greffiers, experts, témoins, enfants), numérotées de façon cohérente dans tout le document (`[PERSONNE_1]`, `[PERSONNE_2]`…). L'initiale accolée au nom fait partie du masque (« N. Dupont » → `[PERSONNE_2]`). Deux personnes ne partagent jamais une étiquette : « P. Dupont » et « N. Dupont », ou « Monsieur Jean DUPONT » et « Madame Marie DUPONT », restent distincts ; « Madame DUPONT » est rattachée à l'épouse. Le genre (civilité, prénom, accord : « la greffière », « , avocate ») empêche de confondre deux homonymes (« Me Anne Leroy » et « Monsieur Leroy »). Particules comprises (« Madame Ben Saïd », « M. El Amrani », « Van der Linden »), prénom entre parenthèses (« MARTIN-LEGRAND (Sophie) ») rattaché au nom, nom en minuscules après une civilité (« Monsieur jean dupont »), agents de police désignés par leur grade (« l'INP Lambert », « le commissaire Leroy ») et leur matricule (`[MATRICULE]`). Initiales seules désignant une personne (« P.V. et G.G., assistés de leur avocat », « Madame F.M. ») : masquées. Noms en capitales non identifiés : `[Nom propre]` (les formules d'actes en capitales restent lisibles : « ONT COMPARU », « L'AN DEUX MILLE VINGT-QUATRE », « COMMANDEMENT DE PAYER »).
   - Adresses postales belges, françaises et néerlandophones (`[ADRESSE]`) : « Rue Petit Bioleux 18, 4120 Neupré », « 24 rue des Acacias, 69003 Lyon », « Kerkstraat 12 bus 3, 9000 Gent », « Grand-Place 22 » ; lieux liés à une personne (`[LIEU]`) : « domicilié à Namur », « née à Ciney », « réside chez sa mère à Liège ».
   - Numéro de registre national / BIS (`[REGISTRE_NATIONAL]`, clé modulo 97 vérifiée). Tout numéro annoncé par **RN, R.N., NN, N.N., NISS** ou « registre national » est masqué quel que soit son format, même avec une faute de frappe (« RN 85.04.03-123.45 », « NN 82011512345 », « 85073003328 (RN) ») — la mention reste lisible : `RN [REGISTRE_NATIONAL]`. Carte d'identité (`[CARTE_IDENTITÉ]`), passeport (`[PASSEPORT]`), NIR français (`[NIR]`)
-  - **Numéros de rôle** (`[NUMÉRO_RÔLE]`) : tout numéro juste avant ou juste après la mention **RG** ou **FA** (« R.G. n° 24/1234/A », « RG n°s 19/1111/A, 19/2222/A et 19/3333/A », « 2023/789 RG », « FA 25/456 »), ou soudé à elle (« 2024/FA/123 », « 22/321/FA »), « N° de rôle : … », « Numéros du rôle : 7407, 7409, 7410 et 7412 », « inscrites sous les numéros … du rôle », « l'affaire n° 7407 ». Un identifiant reconnu une fois (numéro de rôle, registre national, IBAN, téléphone…) est masqué partout où il réapparaît (« l'affaire 7407 »). Références de dossier (`[RÉFÉRENCE_DOSSIER]`) : n° de répertoire (« Rép. n° »), notice du parquet, procès-verbal, Portalis.
+  - **Numéros de rôle** (`[NUMÉRO_RÔLE]`) : tout numéro juste avant ou juste après la mention **RG** ou **FA** (« R.G. n° 24/1234/A », « RG n°s 19/1111/A, 19/2222/A et 19/3333/A », « 2023/789 RG », « FA 25/456 »), ou soudé à elle (« 2024/FA/123 », « 22/321/FA »), « N° de rôle : … », « Numéros du rôle : 7407, 7409, 7410 et 7412 », « inscrites sous les numéros … du rôle », « l'affaire n° 7407 ». Un identifiant reconnu une fois (numéro de rôle, registre national, IBAN, téléphone…) est masqué partout où il réapparaît (« l'affaire 7407 »). Registre des requêtes (« R.R. 22/1234/A »), « Affaires jointes n° 8001 et 8002 ». Références de dossier (`[RÉFÉRENCE_DOSSIER]`) : n° de répertoire (« Rép. n° »), notice du parquet, procès-verbal, Portalis, références de correspondance et de greffe (« Notre réf. », « V/Réf. », « Réf. greffe », « Requête n° »).
   - Dates de naissance (`[DATE_NAISSANCE]`) — les autres dates sont conservées pour garder la chronologie —, nationalité (`[NATIONALITÉ]`)
   - Coordonnées : e-mails (`[EMAIL]`), téléphones belges / français / internationaux (`[TÉLÉPHONE]`) dans tous leurs formats : « 0475/12.34.56 », « 04 223 45 67 », « (081) 22 33 44 », « 02.512.34.56 », « 06 12 34 56 78 », « +32 (0)4 223 45 68 », « 0032 4 … », « +32471234567 », « +33612345678 »…
   - Données bancaires : IBAN de tous pays (`[IBAN]`), anciens n° de compte belges, cartes bancaires (`[CARTE_BANCAIRE]`)
@@ -48,7 +49,7 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
 
 ### Performances et gros fichiers
 
-- **Flux de progression** : `POST /api/anonymize_file?stream=1` renvoie un flux NDJSON (progression, file d'attente, résultat) avec un signal toutes les 10 s au plus : aucun proxy ni navigateur ne coupe un traitement de plusieurs minutes. Sans `?stream=1`, l'endpoint renvoie directement le `.txt` (scripts).
+- **Flux de progression** : `POST /api/anonymize_file?stream=1` renvoie un flux NDJSON (progression, file d'attente, résultat) avec un signal toutes les 10 s au plus : aucun proxy ni navigateur ne coupe un traitement de plusieurs minutes. Sans `?stream=1`, l'endpoint renvoie directement le `.md` (scripts ; nombre de mots à relire dans l'en-tête `X-Review-Count`). L'événement `done` du flux et `/api/anonymize_text` renvoient aussi la liste `review` (`[{"term", "count", "reason"}]`).
 - **Mémoire bornée** : les pages scannées sont rendues au moment de leur OCR (jamais toutes en mémoire), pendant que l'OCR des précédentes se poursuit.
 - **Calculs coordonnés** : le NER (PyTorch) est très sensible à la concurrence pour les cœurs. Mesures sur 4 cœurs : pendant un OCR, une inférence de 1,1 s en prenait 62 ; avec 4 threads, un seul cœur occupé ailleurs la faisait passer de 0,9 s à 7,7 s. Désormais, NER et OCR sont alternés à grain fin (`api/compute.py`), PyTorch laisse un cœur libre (1,2 s dans les deux cas) et ses threads n'attendent plus en boucle (`OMP_WAIT_POLICY=PASSIVE`).
 - **File d'attente** : `ANON_MAX_PARALLEL_JOBS` fichiers traités à la fois par processus ; les suivants affichent « En file d'attente ». Un fichier dont le texte dépasse `ANON_MAX_TEXT_CHARS` est refusé dès la limite franchie, avec un message clair (jamais d'anonymisation partielle).
@@ -146,17 +147,19 @@ Contenu :
 - `tests/test_ocr_quality.py` : aucun texte inventé sur un logo, un sceau, une signature ou une photo ; textes courts lus (ignorés sans Tesseract) ;
 - `tests/test_anonymizer.py` : chaîne complète sur du texte, des fichiers TXT / DOCX / PDF et des images, progression, annulation, limites ;
 - `tests/test_api.py`, `tests/test_logging.py` : API (validation, erreurs, flux, annulation, file d'attente) et absence de contenu dans les journaux ; `tests/test_compute.py` : verrou NER / OCR ;
+- `tests/test_generalisation.py` : défauts trouvés sur les documents inédits (grades de police, lieu de naissance, homonymes et genre, particules, formules notariales, références de dossier…) ;
+- `tests/test_review_markdown.py` : mots à relire et sortie Markdown (titres, tableaux) ;
 - `tests/test_corpus.py` : corpus d'évaluation (voir ci-dessous), aucune fuite tolérée.
 
 ### Corpus d'évaluation
 
-`tests/corpus` contient l'arrêt n° 1/2024 de la Cour constitutionnelle et des documents belges fictifs (jugement du tribunal de la famille, conclusions, citation, procès-verbal, acte notarié, bail, courrier, scan avec tampon, carte d'identité, images sans texte), chacun annoté : ce qui doit être masqué, ce qui doit rester lisible, les mentions d'une même personne, les personnes à distinguer, la fidélité du texte. Mesure détaillée :
+`tests/corpus` contient l'arrêt n° 1/2024 de la Cour constitutionnelle et des documents belges fictifs (jugement du tribunal de la famille, conclusions, citation, procès-verbal, acte notarié, bail, courrier, scan avec tampon, carte d'identité, images sans texte), ainsi que deux jeux de documents **inédits** (`inedit_*`, `inedit_b_*` : jugements, arrêts de la Cour de cassation et de la cour du travail, PV, acte notarié, commandement de payer, expertise médicale, justice de paix…) écrits sans regarder le code pour mesurer si les règles généralisent, chacun annoté : ce qui doit être masqué, ce qui doit rester lisible, les mentions d'une même personne, les personnes à distinguer, la fidélité du texte. Mesure détaillée :
 
 ```bash
 PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py             # tableau + détails
 ```
 
-Indicateurs : taux de fuite (objectif 0 %), sur-anonymisation, cohérence des pseudonymes, fidélité du texte extrait (mots perdus ou altérés), déterminisme. Voir `tests/corpus/README.md`.
+Indicateurs : taux de fuite (objectif 0 %), sur-anonymisation, cohérence des pseudonymes, fidélité du texte extrait (mots perdus ou altérés), mots courants avalés dans un nom (« loco », « L'enfant »), déterminisme. Voir `tests/corpus/README.md`.
 
 ### Compatibilité Tesseract 4.1.1 (serveur Ubuntu 22.04)
 
@@ -214,6 +217,7 @@ restart anonymiser-api:*`) ; sinon : Forge → Site → Processes → `anonymise
 
 ```bash
 curl -s http://127.0.0.1:5328/api/health
+# "ner_model": "Jean-Baptiste/camembert-ner",
 # "ocr": {"available": true, "engine": "tesseract", "languages": ["fra", "nld", "eng"]}
 ```
 
@@ -222,6 +226,16 @@ Si `"available": false` : Tesseract ou la langue française manque
 Un Tesseract installé après le démarrage est désormais détecté sans
 redémarrage (nouvelle vérification toutes les 60 s), mais le redémarrage reste
 nécessaire pour toute mise à jour du code.
+
+**Mise à jour vers la version « Markdown + mots à relire »** :
+
+1. Déployer (le script installe `requirements-prod.txt` ; `requirements-local.txt` n'existe plus, son contenu est dans `requirements.txt`).
+2. Redémarrer Gunicorn (étape 5) — **indispensable**, sinon l'ancien code et l'ancienne détection de Tesseract restent en mémoire.
+3. Vérifier `/api/health` (`"ner_model"` remplace `"nlp_backend"`, `"ocr.available": true`).
+4. La variable `ANON_NLP_BACKEND` peut être retirée de l'environnement Forge : elle est ignorée (CamemBERT est le seul moteur).
+5. Aucune modification Nginx n'est nécessaire.
+
+Tesseract 4.1.1 (Ubuntu 22.04) a été validé : tests OCR, corpus et chaîne complète passent avec cette version comme avec la 5.x.
 
 > **RAM** : prévoir **≥ 2 Go** (torch + modèle CamemBERT ≈ 1 Go en mémoire),
 > **3 Go** pour traiter confortablement deux fichiers de 100 Mo en parallèle.

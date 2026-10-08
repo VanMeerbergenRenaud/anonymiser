@@ -771,6 +771,21 @@ _ARTICLES = frozenset({"le", "la", "les", "l'", "l’", "de", "du", "des", "d'",
 _INITIAL_RE = re.compile(rf"[{UPPER}]\.(?:-[{UPPER}]\.)?")
 
 
+_MONTH_WORDS = frozenset({
+    "JANVIER", "FEVRIER", "MARS", "AVRIL", "MAI", "JUIN", "JUILLET", "AOUT", "SEPTEMBRE",
+    "OCTOBRE", "NOVEMBRE", "DECEMBRE",
+})
+
+
+def _is_month_surname(text: str, tok: tuple[int, int, str]) -> bool:
+    """Nom de mois avec majuscule, sans nombre autour, après un autre mot du
+    nom : nom de famille (« Février », « Mars »), pas une date."""
+    start, end, word = tok
+    return (_token_key(word) in _MONTH_WORDS and word[:1].isupper()
+            and not re.match(r"[ \t]*\d", text[end:end + 3])
+            and not re.search(r"\d[ \t]*\Z", text[max(0, start - 3):start]))
+
+
 def trim_person_name(text: str, start: int, end: int,
                      keep_initials: bool = False) -> Optional[tuple[int, int]]:
     """Retire civilités, fonctions et articles en bordure d'un nom.
@@ -800,6 +815,8 @@ def trim_person_name(text: str, start: int, end: int,
     for i, tok in enumerate(tokens):
         if keep_initials and _INITIAL_RE.fullmatch(tok[2]):
             continue
+        if i > 0 and _is_month_surname(text, tok):
+            continue  # « Anne-Sophie Février » : nom de famille, pas une date
         if _token_key(tok[2]) in NAME_STOP_WORDS:
             tokens = tokens[:i]
             break

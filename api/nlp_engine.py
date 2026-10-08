@@ -1032,6 +1032,10 @@ def _add_uppercase_names(text: str, detections: list[Detection],
     # Les séquences trouvées ne se chevauchent pas entre elles : l'index des
     # détections existantes suffit.
     occupied = _SpanIndex((d.start, d.end) for d in detections)
+    # Mots employés en minuscules dans le document : des mots courants
+    # (« avons fait commandement de payer » → « COMMANDEMENT DE PAYER » est un
+    # intitulé). Un nom de famille n'y figure pratiquement jamais.
+    lowercase_words = {fold(w) for w in re.findall(r"[^\W\d_]+", text) if w.islower()}
     added: list[Detection] = []
     for m in _UPPERCASE_SEQ_RE.finditer(text):
         if occupied.overlaps(m.start(), m.end()) or excluded.overlaps(m.start(), m.end()):
@@ -1046,6 +1050,10 @@ def _add_uppercase_names(text: str, detections: list[Detection],
             continue
         start, end = m.start() + tokens[0].start(), m.start() + tokens[-1].end()
         if _is_heading(text[start:end]):
+            continue
+        words = [p for w in _words(text[start:end]) for p in re.split(r"['’-]", w)
+                 if p and p not in _HEADING_PARTICLES]
+        if words and all(w in lowercase_words for w in words):
             continue
         added.append(Detection(start, end, "FR_NOM_PROPRE", 0.6))
     return detections + added

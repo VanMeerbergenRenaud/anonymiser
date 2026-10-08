@@ -1,0 +1,96 @@
+{
+  "document": "inedit_b_correctionnel.txt",
+  "set": "inédit",
+  "description": "Jugement correctionnel fictif. Jeu inédit B : écrit après les corrections, mesuré une seule fois avant toute retouche. « M. » devant prénom + nom reste lisible (Monsieur) : seules les autres initiales sont contrôlées.",
+  "mask": {
+    "PERSONNE": [
+      "GOOSSENS",
+      "Goossens",
+      "Nathalie",
+      "Lambotte",
+      "Grégory",
+      "MOREAU",
+      "Moreau",
+      "Steve",
+      "Wauthier",
+      "Isabelle",
+      "Karim",
+      "Haddad",
+      "Julie",
+      "Vanhove",
+      "Delhaye",
+      "Fabrice",
+      "Hennuy",
+      "Hubert",
+      "Dumont",
+      "Lerusse"
+    ],
+    "LIEU_NAISSANCE": [
+      "Gosselies",
+      "re:né à (Charleroi) le"
+    ],
+    "DATE_NAISSANCE": [
+      "2 octobre 1979",
+      "14 janvier 1995"
+    ],
+    "ADRESSE": [
+      "rue du Calvaire 7",
+      "6060 Gilly",
+      "avenue de Waterloo 51/3"
+    ],
+    "REGISTRE_NATIONAL": [
+      "95.01.14-153.72"
+    ],
+    "PLAQUE": [
+      "1-KPL-482"
+    ],
+    "IBAN": [
+      "BE45 0682 1234 5689"
+    ],
+    "RÉFÉRENCE_DOSSIER": [
+      "CH.21.L4.008812/23"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-LN-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "TRIBUNAL DE PREMIÈRE INSTANCE DU HAINAUT, DIVISION CHARLEROI",
+    "Ministère public",
+    "avocat à Charleroi",
+    "cour d'appel de Mons",
+    "Marcinelle",
+    "18 avril 2024",
+    "6 juin 2023",
+    "3 mars 2020",
+    "1.250 euros",
+    "80 heures",
+    "Prévention",
+    "partie civile"
+  ],
+  "same_label": [
+    [
+      "Nathalie GOOSSENS",
+      "Nathalie Goossens"
+    ],
+    [
+      "Steve MOREAU",
+      "{Moreau} a déjà",
+      "condamne {MOREAU}"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Nathalie GOOSSENS",
+      "Grégory Lambotte",
+      "Steve MOREAU",
+      "Isabelle Wauthier",
+      "Karim Haddad",
+      "Julie Vanhove",
+      "inspectrice {Delhaye}",
+      "Fabrice Hennuy",
+      "Hubert Dumont",
+      "C. Lerusse"
+    ]
+  ]
+}

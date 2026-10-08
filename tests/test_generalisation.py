@@ -153,3 +153,19 @@ def test_case_references_masked(text, value):
 ])
 def test_public_references_kept(text):
     assert anonymize_text(text) == text
+
+
+# ---------------------------------------------------------------------------
+# Jeu inédit B
+# ---------------------------------------------------------------------------
+
+def test_month_surname_masked():
+    out = anonymize_text("Ainsi jugé par Madame Anne-Sophie Février, juge de paix, le 7 février 2024.")
+    assert "Février" not in out and "7 février 2024" in out
+
+
+def test_title_made_of_document_words_kept():
+    text = ("COMMANDEMENT DE PAYER\nNous avons fait commandement à Monsieur Dimitri Lejeune "
+            "de payer la somme due.")
+    out = anonymize_text(text)
+    assert out.startswith("COMMANDEMENT DE PAYER\n") and "Lejeune" not in out
