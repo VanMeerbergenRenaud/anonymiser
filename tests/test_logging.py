@@ -61,7 +61,7 @@ def test_text_errors_are_logged_without_their_message(client, monkeypatch, caplo
     def boom(text):
         raise RuntimeError(text)
 
-    monkeypatch.setattr(text_module, "anonymize_text", boom)
+    monkeypatch.setattr(text_module, "anonymize_with_review", boom)
     caplog.set_level(logging.DEBUG)
     response = client.post("/api/anonymize_text", json={"text": SECRET})
     assert response.status_code == 500

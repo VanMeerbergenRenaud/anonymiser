@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import type { ReviewTerm } from "@/lib/anonymizeFile";
+import ReviewList from "./ReviewList";
 
 /**
  * Onglet "Texte" : permet de coller un texte libre et de l'anonymiser
@@ -9,6 +11,7 @@ import { useState } from "react";
 export default function TextTab() {
     const [inputText, setInputText] = useState("");
     const [anonymizedText, setAnonymizedText] = useState("");
+    const [review, setReview] = useState<ReviewTerm[]>([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [error, setError] = useState("");
     const [copied, setCopied] = useState(false);
@@ -22,6 +25,7 @@ export default function TextTab() {
         setIsProcessing(true);
         setError("");
         setAnonymizedText("");
+        setReview([]);
         setCopied(false);
 
         try {
@@ -46,6 +50,7 @@ export default function TextTab() {
 
             const data = await res.json();
             setAnonymizedText(data.anonymized);
+            setReview(Array.isArray(data.review) ? data.review : []);
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : "Erreur inconnue";
             setError(msg);
@@ -156,6 +161,10 @@ export default function TextTab() {
                                 )}
                             </button>
                         </div>
+                    </div>
+
+                    <div className="border-b border-border px-6 pb-3 pt-1.5 shrink-0">
+                        <ReviewList review={review} />
                     </div>
 
                     <div className="flex-1 p-6 text-sm whitespace-pre-wrap bg-transparent leading-relaxed overflow-y-auto selection:bg-neutral-200">

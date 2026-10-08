@@ -349,7 +349,9 @@ def evaluate_document(annotation: dict, check_determinism: bool = True) -> Docum
     extracted = extract_text(name, content)
     detections = _detections(extracted)
     if check_determinism:
-        result.deterministic = _apply(extracted, detections) == output
+        from api.anonymize_file import to_markdown
+
+        result.deterministic = to_markdown(_apply(extracted, detections)) == output
 
     # Fuites
     for category, values in annotation.get("mask", {}).items():

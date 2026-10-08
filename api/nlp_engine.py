@@ -86,7 +86,7 @@ from presidio_analyzer.predefined_recognizers import (
 
 from api import settings
 from api.compute import COMPUTE
-from api import public
+from api import public, review
 from api.first_names import is_first_name
 from api.ocr import MARKERS, OCR_END, OCR_START
 from api.progress import ProgressCallback, report
@@ -840,8 +840,8 @@ def _adjacent_name_fragment(text: str, d: Detection, persons_by_start: dict[int,
         preceding is not None and text[d.start - 1] == " ")
 
 
-def _decide_names(text: str, detections: list[Detection],
-                  case_law: _SpanIndex) -> tuple[list[Detection], list[tuple[int, int]]]:
+def _decide_names(text: str, detections: list[Detection], case_law: _SpanIndex
+                  ) -> tuple[list[Detection], list[tuple[int, int, Optional[str]]]]:
     """Décide, pour tout le document, des organisations et lieux du NER.
 
     - Une organisation ou un lieu qui est en fait une personne (même texte
@@ -856,7 +856,9 @@ def _decide_names(text: str, detections: list[Detection],
 
     La décision dépend du texte de l'entité et de son contexte immédiat,
     pas du découpage du NER : « Orde van Vlaamse balies » est conservé
-    partout. Renvoie les détections gardées et les zones laissées lisibles.
+    partout. Renvoie les détections gardées et les zones laissées lisibles,
+    chacune avec le motif à signaler pour relecture (``None`` si la
+    conservation est sûre : institution, pays, siège de juridiction).
     """
     persons = [d for d in detections if d.entity == "PERSON"]
     outside = [d for d in persons if not case_law.overlaps(d.start, d.end)]
@@ -865,12 +867,12 @@ def _decide_names(text: str, detections: list[Detection],
     by_start = {d.start: d for d in persons}
     by_end = {d.end: d for d in persons}
     result: list[Detection] = []
-    kept: list[tuple[int, int]] = []
+    kept: list[tuple[int, int, Optional[str]]] = []
     for d in detections:
         value = text[d.start:d.end]
         in_case = case_law.overlaps(d.start, d.end) and not MASK_CASE_LAW
         if d.entity == "PERSON" and d.from_ner and in_case and not (_name_keys(value) & party_words):
-            kept.append((d.start, d.end))
+            kept.append((d.start, d.end, review.CASE_LAW_PERSON))
             continue
         if not d.from_ner or d.entity not in ("ORGANIZATION", "LOCATION"):
             result.append(d)
@@ -882,18 +884,18 @@ def _decide_names(text: str, detections: list[Detection],
             result.append(d)
             continue
         if in_case or institution:
-            kept.append((d.start, d.end))
+            kept.append((d.start, d.end, None))
         elif d.entity == "LOCATION":
             if public.is_country(value) or _is_jurisdiction_seat(text, d.start):
-                kept.append((d.start, d.end))
+                kept.append((d.start, d.end, None))
             elif public.person_linked_place(text, d.start) or MASK_PLACES:
                 result.append(d)
             else:
-                kept.append((d.start, d.end))
+                kept.append((d.start, d.end, review.KEPT_PLACE))
         elif MASK_ORGANIZATIONS:
             result.append(d)
         else:
-            kept.append((d.start, d.end))
+            kept.append((d.start, d.end, review.KEPT_ORGANIZATION))
     return result, kept
 
 
@@ -1282,8 +1284,19 @@ def detect_entities(
     api.progress.Cancelled
         Levée par ``progress`` pour interrompre l'analyse.
     """
+    return _detect(text, whitelist, blocklist, progress)[0]
+
+
+def _detect(
+    text: str,
+    whitelist: list[str] | None = None,
+    blocklist: list[str] | None = None,
+    progress: Optional[ProgressCallback] = None,
+) -> tuple[list[Detection], list[dict]]:
+    """Détections (voir :func:`detect_entities`) et mots à relire (voir
+    :mod:`api.review`)."""
     if not text or not text.strip():
-        return []
+        return [], []
     check_text_length(text)
     analysis_text = text.translate(_SAME_LENGTH_SPACES)
     protected = _protected_spans(analysis_text)
@@ -1301,8 +1314,9 @@ def detect_entities(
     detections = _propagate_identifiers(analysis_text, detections)
     if MASK_CASE_LAW:
         detections += [Detection(s, e, "CASE_NAME", 0.9) for s, e in case_law]
+    kept_spans = [(s, e) for s, e, _ in kept]
     detections = _add_uppercase_names(
-        analysis_text, detections, _SpanIndex(kept + public_refs + case_law))
+        analysis_text, detections, _SpanIndex(kept_spans + public_refs + case_law))
     detections = split_persons(analysis_text, detections)
     detections = _propagate_persons(analysis_text, detections)
     detections = attach_initials(analysis_text, detections)
@@ -1315,7 +1329,10 @@ def detect_entities(
     detections = _merge_overlaps(detections)
     detections = _merge_adjacent(analysis_text, detections)
     detections = _trim_protected(analysis_text, detections, protected)
-    return _assign_labels(analysis_text, detections)
+    detections = _assign_labels(analysis_text, detections)
+    terms = review.review_terms(
+        analysis_text, detections, kept, public_refs + case_law + protected)
+    return detections, terms
 
 
 def _replace(text: str, detections: list[Detection]) -> str:
@@ -1355,6 +1372,14 @@ def anonymize_text(text: str, progress: Optional[ProgressCallback] = None) -> st
         Texte plus long que ``settings.MAX_TEXT_CHARS``.
     """
     return _replace(text, detect_entities(text, progress=progress))
+
+
+def anonymize_with_review(text: str, progress: Optional[ProgressCallback] = None
+                          ) -> tuple[str, list[dict]]:
+    """Comme :func:`anonymize_text`, avec la liste des mots à relire
+    (``[{"term", "count", "reason"}]``, voir :mod:`api.review`)."""
+    detections, terms = _detect(text, progress=progress)
+    return _replace(text, detections), terms
 
 
 # ---------------------------------------------------------------------------

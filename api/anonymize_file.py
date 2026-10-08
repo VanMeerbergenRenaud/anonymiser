@@ -3,7 +3,7 @@ anonymize_file — Conversion et anonymisation de fichiers (TXT, DOCX, PDF, imag
 
 Chaque fichier est converti en texte brut (UTF-8), puis anonymisé via le
 moteur partagé de ``api.nlp_engine``. Le résultat est toujours un fichier
-``.txt`` anonymisé.
+``.md`` anonymisé (Markdown : titres et tableaux Word restitués).
 
 Formats supportés en entrée
 ---------------------------
@@ -47,7 +47,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from lxml import etree
 
 from api import ocr, settings
-from api.nlp_engine import TextTooLongError, anonymize_text, check_text_length, known_word
+from api.nlp_engine import TextTooLongError, anonymize_with_review, check_text_length, known_word
 from api.progress import ProgressCallback, report
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,9 @@ class ProcessedFile:
     skipped_images: int = 0
     """Nombre d'images non analysées (OCR indisponible, format, limite)."""
 
+    review: list[dict] = field(default_factory=list)
+    """Mots à relire (voir :mod:`api.review`)."""
+
 
 def _append(doc: _Doc, items: list[str | _Image]) -> None:
     for item in items:
@@ -284,10 +287,35 @@ def _finish(text: str, found: int, skipped: int) -> Extraction:
     return Extraction(cleaned, found, skipped)
 
 
+_TABLE_ROW_RE = re.compile(r"\|.*\|")
+
+
+def to_markdown(text: str) -> str:
+    """Met en forme le texte anonymisé en Markdown, sans changer un mot.
+
+    Chaque ligne du texte extrait est un paragraphe (ou un titre ``#``, une
+    ligne de tableau) : une ligne vide les sépare, sauf entre deux lignes
+    d'un même tableau. Le retrait en début de ligne est retiré (il ferait un
+    bloc de code).
+    """
+    out: list[str] = []
+    previous_row = False
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        row = _TABLE_ROW_RE.fullmatch(line) is not None
+        if out and not (row and previous_row):
+            out.append("")
+        out.append(line)
+        previous_row = row
+    return "\n".join(out) + "\n"
+
+
 def _anonymize(extraction: Extraction, progress: Optional[ProgressCallback]) -> ProcessedFile:
-    anonymized = anonymize_text(extraction.text, progress=progress)
-    return ProcessedFile(anonymized.encode("utf-8"), ocr_images=extraction.ocr_images,
-                         skipped_images=extraction.skipped_images)
+    anonymized, review = anonymize_with_review(extraction.text, progress=progress)
+    return ProcessedFile(to_markdown(anonymized).encode("utf-8"), ocr_images=extraction.ocr_images,
+                         skipped_images=extraction.skipped_images, review=review)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +521,30 @@ class _Numbering:
         return re.sub(r"%(\d)", number, text).strip()
 
 
+_HEADING_STYLE_RE = re.compile(r"(?i)(?:heading|titre|kop)[ \t]*([1-6])$")
+
+
+def _heading_levels(document) -> dict[str, int]:
+    """Styles de titre du document (« Heading 2 », « Titre 2 », « Title ») →
+    niveau, restitué en Markdown (``## ``)."""
+    levels: dict[str, int] = {}
+    try:
+        styles = list(document.styles)
+    except Exception:  # noqa: BLE001 — styles illisibles : pas de titres
+        return levels
+    for style in styles:
+        name = (getattr(style, "name", "") or "").strip()
+        style_id = getattr(style, "style_id", None)
+        if not style_id:
+            continue
+        m = _HEADING_STYLE_RE.search(name)
+        if m:
+            levels[style_id] = int(m.group(1))
+        elif name.lower() in ("title", "titre"):
+            levels[style_id] = 1
+    return levels
+
+
 class _DocxReader:
     """Parcourt le XML d'un DOCX dans l'ordre de lecture."""
 
@@ -500,6 +552,19 @@ class _DocxReader:
         self.document = document
         self.seen_images: set[str] = set()
         self.numbering = _Numbering(document)
+        self.heading_levels = _heading_levels(document)
+
+    def heading_level(self, p) -> int:
+        """Niveau de titre du paragraphe (1 à 6), 0 pour du texte courant."""
+        ppr = p.find(_q("w", "pPr"))
+        if ppr is None:
+            return 0
+        outline = ppr.find(_q("w", "outlineLvl"))
+        if outline is not None and (outline.get(_W_VAL) or "").isdigit():
+            level = int(outline.get(_W_VAL)) + 1
+            return level if level <= 6 else 0
+        style = ppr.find(_q("w", "pStyle"))
+        return self.heading_levels.get(style.get(_W_VAL), 0) if style is not None else 0
 
     # --- Images -------------------------------------------------------------
 
@@ -569,28 +634,46 @@ class _DocxReader:
         visit(p)
         text = "".join(texts)
         label = self.numbering.label(p) if text.strip() else ""
-        doc.text(f"{label} {text.lstrip()}" if label else text)
+        if label:
+            text = f"{label} {text.lstrip()}"
+        level = self.heading_level(p) if text.strip() and "\n" not in text.strip() else 0
+        doc.text(f"{'#' * level} {text.strip()}" if level else text)
         for box in nested:
             self.blocks(box, part, doc)
         for data in images:
             doc.image(_Image(data))
 
     def _table(self, tbl, part, doc: _Doc) -> None:
+        """Tableau Markdown (« | a | b | ») ; les cellules vides sont gardées
+        pour que les colonnes restent alignées. Un tableau d'une seule colonne
+        (mise en page : cadre, en-tête) est restitué en paragraphes."""
+        rows: list[list[str]] = []
+        images: list[_Image] = []
         for tr in tbl.iter(_W_TR):
             if tr.getparent() is not tbl:
                 continue  # lignes d'un tableau imbriqué : traitées via la cellule
             cells: list[str] = []
-            row_images: list[_Image] = []
             for tc in tr.findall(_W_TC):
                 sub = _Doc()
                 self.blocks(tc, part, sub)
-                cell_text = " ".join(sub.plain_text().split())
-                if cell_text:
-                    cells.append(cell_text)
-                row_images.extend(p for p in sub.parts if isinstance(p, _Image))
-            doc.text(" | ".join(cells))
-            for image in row_images:
-                doc.image(image)
+                cells.append(" ".join(sub.plain_text().split()))
+                images.extend(p for p in sub.parts if isinstance(p, _Image))
+            if any(cells):
+                rows.append(cells)
+        width = max((len(r) for r in rows), default=0)
+        if width <= 1:
+            for row in rows:
+                doc.text(row[0] if row else "")
+        else:
+            doc.section()
+            for index, row in enumerate(rows):
+                cells = [c.replace("|", "\\|") for c in row] + [""] * (width - len(row))
+                doc.text("| " + " | ".join(cells) + " |")
+                if index == 0:
+                    doc.text("|" + "---|" * width)
+            doc.section()
+        for image in images:
+            doc.image(image)
 
     # --- Parties annexes (en-têtes, pieds, notes) ---------------------------
 

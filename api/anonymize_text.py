@@ -7,8 +7,9 @@ endpoints ``/api/anonymize_text`` et ``/api/analyze_text`` (``api.index``).
 
 from api.nlp_engine import (  # noqa: F401 — ré-export intentionnel
     anonymize_text,
+    anonymize_with_review,
     analyze_text_detailed,
     apply_detections,
 )
 
-__all__ = ["anonymize_text", "analyze_text_detailed", "apply_detections"]
+__all__ = ["anonymize_text", "anonymize_with_review", "analyze_text_detailed", "apply_detections"]

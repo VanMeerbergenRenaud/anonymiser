@@ -82,16 +82,17 @@ def test_file_download_headers(client):
     ))
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    assert response.headers["X-Filename"] == "a-D%C3%A9cision%20n%C2%B01.txt"
-    assert 'filename="a-Decision n1.txt"' in response.headers["Content-Disposition"]
+    assert response.headers["X-Filename"] == "a-D%C3%A9cision%20n%C2%B01.md"
+    assert 'filename="a-Decision n1.md"' in response.headers["Content-Disposition"]
+    assert response.mimetype == "text/markdown"
     assert "DUBOIS" not in response.get_data(as_text=True)
 
 
 @pytest.mark.parametrize("name, expected", [
-    ('C:\\Users\\x\\Jugé "final".pdf', "a-Jugé _final_.txt"),
-    ("../../etc/passwd", "a-passwd.txt"),
-    ("a\r\nb.pdf", "a-a__b.txt"),
-    ("   .pdf", "a-document.txt"),
+    ('C:\\Users\\x\\Jugé "final".pdf', "a-Jugé _final_.md"),
+    ("../../etc/passwd", "a-passwd.md"),
+    ("a\r\nb.pdf", "a-a__b.md"),
+    ("   .pdf", "a-document.md"),
 ])
 def test_output_filename_is_sanitized(name, expected):
     assert index._output_filename(name) == expected
@@ -133,8 +134,9 @@ def test_stream_reports_progress_then_result(client):
     assert stream[0] == {"event": "accepted"}
     assert any(e["event"] == "progress" and e["stage"] == "analyze" for e in stream)
     done = stream[-1]
-    assert done["event"] == "done" and done["filename"] == "a-note.txt"
+    assert done["event"] == "done" and done["filename"] == "a-note.md"
     assert "DELVAUX" not in done["content"] and "0475" not in done["content"]
+    assert isinstance(done["review"], list)
 
 
 def test_stream_reports_user_errors(client):

@@ -24,12 +24,13 @@ un proxy ou le navigateur. En mode ``stream``, la réponse est un flux NDJSON
 - ``{"event": "progress", "stage": "ocr", "done": 3, "total": 40}`` ;
 - ``{"event": "keepalive"}`` : maintient la connexion pendant un long calcul ;
 - ``{"event": "done", "filename": ..., "content": ..., "ocr_images": ...,
-  "ocr_skipped": ...}`` : résultat ;
+  "ocr_skipped": ..., "review": [...]}`` : résultat (texte Markdown) et mots
+  à relire ;
 - ``{"event": "error", "status": 400, "error": "..."}`` : échec.
 
 Si le navigateur se déconnecte, le traitement est annulé (voir
 ``api.progress``). Sans ``stream``, l'endpoint renvoie directement le
-fichier ``.txt`` (usage scripts / API).
+fichier ``.md`` (usage scripts / API).
 
 Confidentialité
 ---------------
@@ -167,13 +168,15 @@ def anonymize_text():
     """Anonymise un texte brut envoyé au format JSON.
 
     Attend un corps JSON ``{"text": "..."}`` et retourne
-    ``{"anonymized": "..."}``.
+    ``{"anonymized": "...", "review": [{"term", "count", "reason"}, ...]}``
+    (mots à relire, voir ``api.review``).
     """
     text = _read_text(_json_body())
     if not isinstance(text, str):
         return text
     try:
-        return jsonify({"anonymized": text_module.anonymize_text(text)})
+        anonymized, review = text_module.anonymize_with_review(text)
+        return jsonify({"anonymized": anonymized, "review": review})
     except Exception:  # noqa: BLE001
         _log_internal_error("Erreur lors de l'anonymisation d'un texte")
         return _error("Erreur interne lors de l'anonymisation.", 500)
@@ -206,23 +209,23 @@ def analyze_text_detailed():
 # ---------------------------------------------------------------------------
 
 def _output_filename(filename: str) -> str:
-    """« C:\\dossier\\Jugement 2024.pdf » → « a-Jugement 2024.txt »."""
+    """« C:\\dossier\\Jugement 2024.pdf » → « a-Jugement 2024.md »."""
     base = filename.replace("\\", "/").rsplit("/", 1)[-1]
     stem = os.path.splitext(base)[0]
     stem = re.sub(r"[\x00-\x1f\x7f\"*:<>?|]", "_", stem).strip(" .") or "document"
-    return f"a-{stem[:150]}.txt"
+    return f"a-{stem[:150]}.md"
 
 
 def _ascii_filename(filename: str) -> str:
     """Nom de repli ASCII pour ``Content-Disposition`` (anciens clients)."""
     ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
-    return re.sub(r"[^A-Za-z0-9._ -]", "_", ascii_name) or "anonymise.txt"
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", ascii_name) or "anonymise.md"
 
 
 def _file_response(result: file_module.ProcessedFile, output_name: str) -> Response:
     return Response(
         result.content,
-        mimetype="text/plain; charset=utf-8",
+        mimetype="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": (
                 f'attachment; filename="{_ascii_filename(output_name)}"; '
@@ -231,6 +234,7 @@ def _file_response(result: file_module.ProcessedFile, output_name: str) -> Respo
             "X-Filename": quote(output_name),
             "X-Ocr-Images": str(result.ocr_images),
             "X-Ocr-Skipped": str(result.skipped_images),
+            "X-Review-Count": str(len(result.review)),
             "Cache-Control": "no-store",
         },
     )
@@ -277,6 +281,7 @@ def _stream_job(filename: str, content: bytes, output_name: str) -> Response:
                 "ocr_images": result.ocr_images,
                 "ocr_skipped": result.skipped_images,
                 "content": result.content.decode("utf-8"),
+                "review": result.review,
             })
         except Cancelled:
             logger.info("Traitement annulé (client déconnecté)")
@@ -329,7 +334,7 @@ def anonymize_file():
     """Anonymise un fichier uploadé via multipart/form-data.
 
     Attend un champ ``file`` contenant le document (PDF, DOCX, TXT ou image).
-    Retourne toujours un texte ``.txt`` anonymisé (UTF-8) : directement, ou
+    Retourne toujours un texte ``.md`` anonymisé (UTF-8) : directement, ou
     dans l'événement ``done`` du flux NDJSON avec ``?stream=1``. Les
     en-têtes ``X-Ocr-Images`` / ``X-Ocr-Skipped`` (mode direct) indiquent le
     nombre d'images lues par OCR / non analysées.
