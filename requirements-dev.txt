@@ -5,6 +5,6 @@
 # Lancement :
 #   PYTHONPATH=. ./venv/bin/python -m pytest
 
--r requirements-local.txt
+-r requirements.txt
 
 pytest>=8,<9

@@ -60,7 +60,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 import api.anonymize_file as file_module
 import api.anonymize_text as text_module
 from api import ocr, settings
-from api.nlp_engine import TextTooLongError, select_backend
+from api.nlp_engine import NER_MODEL, TextTooLongError
 from api.progress import Cancelled
 
 # ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ def health():
     """État du backend : moteur NER actif, OCR et limites."""
     return jsonify({
         "status": "ok",
-        "nlp_backend": select_backend(),
+        "ner_model": NER_MODEL,
         "ocr": ocr.status(),
         "formats": list(file_module.SUPPORTED_EXTENSIONS),
         "limits": {

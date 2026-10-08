@@ -10,7 +10,7 @@ Chaîne de traitement
 --------------------
 1. **Détection** — Presidio combine :
 
-   - le NER (CamemBERT ou spaCy) pour les personnes, lieux et organisations ;
+   - le NER (CamemBERT) pour les personnes, lieux et organisations ;
    - les recognizers sur mesure de ``api.recognizers`` (registre national
      belge, IBAN, téléphones, adresses, noms précédés d'une civilité,
      champs de formulaire, dates de naissance…) ;
@@ -41,25 +41,19 @@ un seuil de confiance plus bas (``ANON_OCR_SCORE_THRESHOLD``, défaut 0.4) :
 l'OCR introduit des erreurs qui font baisser les scores. Les lignes de
 marqueurs elles-mêmes ne sont jamais modifiées.
 
-Moteur NER (backend)
---------------------
-Sélectionnable via ``ANON_NLP_BACKEND`` :
-
-- ``transformers`` → CamemBERT-NER (``Jean-Baptiste/camembert-ner``), plus
-  précis sur le français, recommandé. Nécessite ``torch`` + ``transformers``
-  (voir ``requirements-local.txt``).
-- ``spacy`` → modèle spaCy ``fr_core_news_md`` (léger, utilisé sur Vercel).
-
-Par défaut : ``spacy`` sur Vercel (variable ``VERCEL`` présente), sinon
-``transformers`` si installé.
+Moteur NER
+----------
+CamemBERT-NER (``Jean-Baptiste/camembert-ner``), via ``torch`` +
+``transformers``. Le modèle spaCy ``fr_core_news_md`` ne sert qu'au
+découpage en mots et au lexique (son NER n'est pas exécuté).
 
 Performances
 ------------
 Le NER représente l'essentiel du temps de calcul (≈ 6 000 caractères par
-seconde pour CamemBERT sur 4 cœurs, contre quelques millisecondes pour les
+seconde sur 4 cœurs, contre quelques millisecondes pour les
 règles). En conséquence :
 
-- seuls les composants spaCy utiles sont exécutés (tokenisation + NER) ;
+- seuls la tokenisation spaCy et le NER CamemBERT sont exécutés ;
 - l'inférence a la machine pour elle seule (``api.compute.COMPUTE``) :
   PyTorch parallélise déjà chaque calcul sur tous les cœurs, et une
   inférence concurrente d'une autre inférence ou d'un OCR serait des
@@ -235,89 +229,45 @@ class TextTooLongError(ValueError):
 _MIN_THRESHOLD = min(SCORE_THRESHOLD, OCR_SCORE_THRESHOLD)
 
 # ---------------------------------------------------------------------------
-# Sélection et configuration du backend NER
+# Configuration du NER (CamemBERT)
 # ---------------------------------------------------------------------------
 
+NER_MODEL = "Jean-Baptiste/camembert-ner"
+"""Modèle de reconnaissance d'entités (HuggingFace), seul moteur NER."""
+
 _SPACY_MODEL = "fr_core_news_md"
-"""Modèle spaCy utilisé (NER en backend spaCy, tokenisation en backend transformers)."""
+"""Modèle spaCy servant uniquement au découpage en mots (exigé par Presidio)
+et au lexique français (voir :func:`known_word`) : son propre NER n'est
+jamais exécuté."""
 
-_TRANSFORMERS_MODEL = "Jean-Baptiste/camembert-ner"
-"""Modèle CamemBERT-NER HuggingFace utilisé en backend ``transformers``."""
-
-# Mapping labels NER (spaCy ET CamemBERT utilisent PER/LOC/ORG/MISC).
+# Mapping labels NER (CamemBERT : PER/LOC/ORG/MISC).
 # MISC (« Code civil », événements, œuvres…) est ignoré : trop bruité dans
 # les documents juridiques ; la nationalité est captée par des règles dédiées.
 _NER_ENTITY_MAPPING: dict[str, str] = {
     "PER": "PERSON",
-    "PERSON": "PERSON",
     "LOC": "LOCATION",
-    "LOCATION": "LOCATION",
     "ORG": "ORGANIZATION",
-    "ORGANIZATION": "ORGANIZATION",
 }
 _NER_LABELS_TO_IGNORE = ["O", "MISC"]
 
 
-def _transformers_available() -> bool:
-    """Vrai si ``torch`` et ``transformers`` sont installés (backend CamemBERT)."""
-    import importlib.util
-
-    return (
-        importlib.util.find_spec("torch") is not None
-        and importlib.util.find_spec("transformers") is not None
-    )
-
-
-def select_backend() -> str:
-    """Retourne le backend NER actif : ``"transformers"`` ou ``"spacy"``.
-
-    Piloté par ``ANON_NLP_BACKEND`` (``"spacy"`` ou ``"transformers"``). En
-    l'absence de valeur explicite, le choix est automatique :
-
-    - ``spacy`` sur Vercel (variable ``VERCEL`` présente, CamemBERT n'y rentre
-      pas) ;
-    - ``transformers`` (CamemBERT) ailleurs **si** ``torch`` + ``transformers``
-      sont installés, sinon repli sur ``spacy``.
-
-    Un choix explicite via ``ANON_NLP_BACKEND`` est toujours respecté.
-    """
-    backend = os.environ.get("ANON_NLP_BACKEND", "").strip().lower()
-    if backend in {"spacy", "transformers"}:
-        return backend
-    if os.environ.get("VERCEL"):
-        return "spacy"
-    return "transformers" if _transformers_available() else "spacy"
-
-
 def _nlp_configuration() -> dict:
-    """Construit la configuration ``NlpEngineProvider`` selon le backend actif."""
-    ner_configuration = {
-        "labels_to_ignore": _NER_LABELS_TO_IGNORE,
-        "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
-        "low_score_entity_names": [],
-    }
-    if select_backend() == "transformers":
-        return {
-            "nlp_engine_name": "transformers",
-            "models": [
-                {
-                    "lang_code": "fr",
-                    "model_name": {
-                        "spacy": _SPACY_MODEL,
-                        "transformers": _TRANSFORMERS_MODEL,
-                    },
-                }
-            ],
-            "ner_model_configuration": {
-                **ner_configuration,
-                "aggregation_strategy": "simple",
-                "alignment_mode": "expand",
-            },
-        }
+    """Configuration ``NlpEngineProvider`` : CamemBERT + tokenisation spaCy."""
     return {
-        "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "fr", "model_name": _SPACY_MODEL}],
-        "ner_model_configuration": ner_configuration,
+        "nlp_engine_name": "transformers",
+        "models": [
+            {
+                "lang_code": "fr",
+                "model_name": {"spacy": _SPACY_MODEL, "transformers": NER_MODEL},
+            }
+        ],
+        "ner_model_configuration": {
+            "labels_to_ignore": _NER_LABELS_TO_IGNORE,
+            "model_to_presidio_entity_mapping": _NER_ENTITY_MAPPING,
+            "low_score_entity_names": [],
+            "aggregation_strategy": "simple",
+            "alignment_mode": "expand",
+        },
     }
 
 
@@ -325,13 +275,13 @@ def _nlp_configuration() -> dict:
 # Construction de l'AnalyzerEngine
 # ---------------------------------------------------------------------------
 
-_NER_PIPES = frozenset({"hf_token_pipe", "ner"})
-"""Composants spaCy réellement utiles : le NER (CamemBERT ou spaCy).
+_NER_PIPES = frozenset({"hf_token_pipe"})
+"""Seul composant spaCy exécuté : le NER CamemBERT (après la tokenisation).
 
-Les autres (morphologie, lemmatisation, analyse syntaxique) ne servent qu'à
-l'« amélioration par le contexte » de Presidio, qui ne concerne aucune de nos
-règles : les désactiver accélère l'analyse sans changer les détections. Le
-NER spaCy de ``fr_core_news_md`` possède son propre ``tok2vec`` interne."""
+Les autres (morphologie, lemmatisation, analyse syntaxique, NER spaCy) ne
+servent qu'à l'« amélioration par le contexte » de Presidio, qui ne concerne
+aucune de nos règles : les désactiver accélère l'analyse sans changer les
+détections."""
 
 # Annotations CamemBERT tombant à l'intérieur d'un seul mot spaCy (fragments
 # d'e-mails, d'URL — déjà masqués par les règles) : bruit sans conséquence.

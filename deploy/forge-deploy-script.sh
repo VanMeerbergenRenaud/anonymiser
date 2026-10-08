@@ -29,7 +29,7 @@ command -v tesseract >/dev/null 2>&1 \
     || echo "⚠ Tesseract absent : sudo apt-get install -y tesseract-ocr tesseract-ocr-fra tesseract-ocr-nld"
 
 # Préchargement du modèle (téléchargé une seule fois)
-PYTHONPATH="$FORGE_RELEASE_DIRECTORY" ANON_NLP_BACKEND=transformers \
+PYTHONPATH="$FORGE_RELEASE_DIRECTORY" \
     "$VENV/bin/python" -c "import api.nlp_engine"
 # -------------------------------------------------------------------------
 

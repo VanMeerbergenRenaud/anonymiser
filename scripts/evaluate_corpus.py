@@ -7,7 +7,6 @@ Utilisation (depuis la racine du dépôt) ::
     PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py --json resultats.json
     PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py jugement_famille.pdf
 
-Moteur NER : ``ANON_NLP_BACKEND=spacy`` ou ``transformers`` (défaut).
 Voir ``tests/corpus/corpus_eval.py`` pour les indicateurs et le format des
 annotations. Le code de sortie vaut 1 si une fuite ou une erreur est trouvée.
 """
@@ -35,10 +34,10 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true", help="tableau seul, sans détails")
     args = parser.parse_args()
 
-    from api.nlp_engine import select_backend
+    from api.nlp_engine import NER_MODEL
 
     results = evaluate_corpus(args.documents or None, check_determinism=not args.no_determinism)
-    print(f"Moteur NER : {select_backend()}\n")
+    print(f"Modèle NER : {NER_MODEL}\n")
     print(format_report(results, verbose=not args.quiet))
     if args.json:
         Path(args.json).write_text(

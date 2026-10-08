@@ -33,8 +33,7 @@ texte extrait (`present`, `absent`). Le format est détaillé dans
 ## Mesure
 
 ```bash
-PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py            # CamemBERT
-ANON_NLP_BACKEND=spacy PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py
+PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py
 TESSERACT_CMD=/chemin/tesseract-4.1.1 PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py
 ```
 

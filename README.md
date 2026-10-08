@@ -40,9 +40,7 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
 ## Architecture technique
 
 - **Frontend** : Next.js (App Router), React, Tailwind CSS
-- **Backend NLP** : Python, Flask, Presidio (Microsoft) avec deux moteurs de reconnaissance d'entités au choix :
-  - **CamemBERT-NER** (`Jean-Baptiste/camembert-ner`, via `transformers`) — plus précis sur le français, recommandé en local.
-  - **spaCy** (`fr_core_news_md`) — léger, utilisé sur Vercel où CamemBERT ne rentre pas dans une fonction serverless.
+- **Backend NLP** : Python, Flask, Presidio (Microsoft) et le modèle de reconnaissance d'entités **CamemBERT-NER** (`Jean-Baptiste/camembert-ner`, via `transformers`). Le modèle spaCy `fr_core_news_md` ne sert qu'au découpage en mots et au lexique français (son NER, moins précis, n'est plus utilisé).
 - **Manipulation de fichiers** : PyMuPDF (`fitz`) pour les PDF, `python-docx` pour Word, Pillow pour les images
 - **OCR** : [Tesseract](https://github.com/tesseract-ocr/tesseract) (français, néerlandais, anglais), appelé localement — aucune donnée envoyée à un tiers. Redressement automatique des images pivotées.
 - **Code** : `api/nlp_engine.py` (chaîne d'anonymisation), `api/recognizers.py` (règles belges / françaises), `api/persons.py` (initiales, regroupement des personnes, pseudonymes), `api/public.py` (références publiques, institutions, pays, jurisprudence, lieux liés à une personne), `api/first_names.py` (prénoms courants : second détecteur de personnes, indépendant du NER), `api/ocr.py` (OCR et filtre de qualité), `api/anonymize_file.py` (extraction des fichiers, reconstruction de la mise en page PDF, numérotation Word), `api/index.py` (API Flask, flux de progression), `api/settings.py` (limites), `api/compute.py` (coordination NER / OCR), `src/lib/anonymizeFile.ts` (client d'envoi)
@@ -56,16 +54,7 @@ Une application web locale pour l'anonymisation automatique de documents juridiq
 - **File d'attente** : `ANON_MAX_PARALLEL_JOBS` fichiers traités à la fois par processus ; les suivants affichent « En file d'attente ». Un fichier dont le texte dépasse `ANON_MAX_TEXT_CHARS` est refusé dès la limite franchie, avec un message clair (jamais d'anonymisation partielle).
 - **Post-traitement** en O(n log n) (index triés) : négligeable même pour des milliers de pages.
 
-### Choix du moteur (`ANON_NLP_BACKEND`)
-
-Le backend est piloté par la variable d'environnement `ANON_NLP_BACKEND` :
-
-| Valeur | Moteur | Usage |
-|---|---|---|
-| `transformers` | CamemBERT-NER | Local (défaut hors Vercel) |
-| `spacy` | spaCy `fr_core_news_md` | Vercel (défaut si la variable `VERCEL` est présente) |
-
-### Autres réglages (variables d'environnement)
+### Réglages (variables d'environnement)
 
 | Variable | Défaut | Rôle |
 |---|---|---|
@@ -116,19 +105,12 @@ Le backend est piloté par la variable d'environnement `ANON_NLP_BACKEND` :
 
 3. **Installer les dépendances backend :**
 
-   Pour utiliser le moteur **CamemBERT-NER** (recommandé en local) :
    ```bash
-   pip install -r requirements-local.txt
+   pip install -r requirements.txt
    ```
    > Au premier lancement, le modèle `Jean-Baptiste/camembert-ner` (~440 Mo)
    > est téléchargé une seule fois dans `~/.cache/huggingface`, puis utilisé
    > **hors-ligne**. Aucune donnée n'est envoyée à un tiers à l'usage.
-
-   Pour utiliser uniquement le moteur **spaCy** (plus léger, sans `torch`) :
-   ```bash
-   pip install -r requirements.txt
-   export ANON_NLP_BACKEND=spacy
-   ```
 
 ## Développement
 
@@ -152,11 +134,10 @@ Le backend est piloté par la variable d'environnement `ANON_NLP_BACKEND` :
 
 ```bash
 pip install -r requirements-dev.txt
-PYTHONPATH=. ./venv/bin/python -m pytest                              # CamemBERT
-ANON_NLP_BACKEND=spacy PYTHONPATH=. ./venv/bin/python -m pytest       # spaCy
+PYTHONPATH=. ./venv/bin/python -m pytest
 ```
 
-Les deux moteurs doivent passer l'ensemble des tests :
+Contenu :
 
 - `tests/test_recognizers.py` : règles (registre national, numéros de rôle, téléphones, IBAN, adresses, noms…) et absence de faux positifs, sans modèle ;
 - `tests/test_persons.py` : initiales, « M. », initiales seules, pseudonymes sans collision (signatures, homonymes, famille portant le même nom) ;
@@ -173,7 +154,6 @@ Les deux moteurs doivent passer l'ensemble des tests :
 
 ```bash
 PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py             # tableau + détails
-ANON_NLP_BACKEND=spacy PYTHONPATH=. ./venv/bin/python scripts/evaluate_corpus.py
 ```
 
 Indicateurs : taux de fuite (objectif 0 %), sur-anonymisation, cohérence des pseudonymes, fidélité du texte extrait (mots perdus ou altérés), déterminisme. Voir `tests/corpus/README.md`.
@@ -212,7 +192,6 @@ Nginx (443)
   - Command : `/home/forge/anonymiser.on-forge.com/venv/bin/gunicorn -c gunicorn.conf.py api.index:app`
   - Working directory : `/home/forge/anonymiser.on-forge.com/current` (valeur par défaut)
   - Processes : `1`
-- Variable d'env : `ANON_NLP_BACKEND=transformers` (ou laisser l'auto-détection).
 - ⚠️ Crée ce background process **après** un premier déploiement réussi (le venv
   doit déjà exister).
 
@@ -246,10 +225,6 @@ nécessaire pour toute mise à jour du code.
 
 > **RAM** : prévoir **≥ 2 Go** (torch + modèle CamemBERT ≈ 1 Go en mémoire),
 > **3 Go** pour traiter confortablement deux fichiers de 100 Mo en parallèle.
->
-> **Vercel** : les fonctions serverless limitent les envois à 4,5 Mo et la durée
-> à 60 s ; la limite de 100 Mo et le suivi en direct supposent le déploiement
-> sur serveur (Forge / VPS) décrit ci-dessus.
 
 ## Confidentialité
 
