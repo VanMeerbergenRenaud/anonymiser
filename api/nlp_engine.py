@@ -118,6 +118,10 @@ from api.spans import SpanIndex as _SpanIndex
 
 logger = logging.getLogger(__name__)
 
+# Presidio écrit une ligne INFO par morceau analysé (« Fetching all
+# recognizers… ») : bruit sans intérêt dans les journaux de production.
+logging.getLogger("presidio-analyzer").setLevel(logging.WARNING)
+
 # ---------------------------------------------------------------------------
 # Mapping entité → label français lisible
 # ---------------------------------------------------------------------------
