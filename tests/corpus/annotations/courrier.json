@@ -1,0 +1,19 @@
+{
+  "document": "courrier.docx",
+  "description": "Courrier fictif entre avocats (Word) : en-tête avec coordonnées et TVA, destinataire sur plusieurs lignes, « Concerne » en capitales, image de signature.",
+  "mask": {
+    "PERSONNE": ["Sophie", "RENIER", "Laurent", "DECHAMPS", "DUPUIS", "MERTENS", "Claire", "Hugo", "Jeanne", "Noah"],
+    "ADRESSE": ["Rue de Bruxelles 61", "Saint-Lambert 14", "re:4000 Liège", "re:5000 Namur"],
+    "TÉLÉPHONE": ["081/22.33.45"],
+    "EMAIL": ["s.renier@renier-avocats.be"],
+    "TVA": ["0876.543.270"],
+    "NUMÉRO_RÔLE": ["24/789/A"]
+  },
+  "keep": [
+    "Namur, le 12 juin 2024", "Tribunal de la famille de Liège", "Cher Confrère", "3 juin 2024",
+    "25 juin 2024 à 9 h 00", "Avocate"
+  ],
+  "same_label": [["Maître {Sophie RENIER}", "Sophie RENIER"]],
+  "distinct_labels": [["Claire DUPUIS", "Jeanne DUPUIS"], ["Hugo MERTENS", "Noah MERTENS"]],
+  "absent": ["re:--- Texte extrait d'une image"]
+}

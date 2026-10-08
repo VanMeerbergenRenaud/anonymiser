@@ -3,7 +3,7 @@ anonymize_file — Conversion et anonymisation de fichiers (TXT, DOCX, PDF, imag
 
 Chaque fichier est converti en texte brut (UTF-8), puis anonymisé via le
 moteur partagé de ``api.nlp_engine``. Le résultat est toujours un fichier
-``.txt`` anonymisé.
+``.md`` anonymisé (Markdown : titres et tableaux Word restitués).
 
 Formats supportés en entrée
 ---------------------------
@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -46,7 +47,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from lxml import etree
 
 from api import ocr, settings
-from api.nlp_engine import TextTooLongError, anonymize_text, check_text_length
+from api.nlp_engine import TextTooLongError, anonymize_with_review, check_text_length, known_word
 from api.progress import ProgressCallback, report
 
 logger = logging.getLogger(__name__)
@@ -140,13 +141,14 @@ class _Doc:
         self._new_block = False
         self._count(value)
 
-    def continue_last(self, value: str) -> None:
+    def continue_last(self, value: str,
+                      join: Optional[Callable[[str, str], str]] = None) -> None:
         """Prolonge le dernier bloc de texte (phrase coupée par un saut de page)."""
         last = self.parts[-1] if self.parts else None
         if not isinstance(last, str):
             self.text(value)
             return
-        self.parts[-1] = last.rstrip() + " " + value.lstrip()
+        self.parts[-1] = join(last, value) if join else last.rstrip() + " " + value.lstrip()
         self._count(value)
 
     def _count(self, value: str) -> None:
@@ -178,6 +180,9 @@ class ProcessedFile:
 
     skipped_images: int = 0
     """Nombre d'images non analysées (OCR indisponible, format, limite)."""
+
+    review: list[dict] = field(default_factory=list)
+    """Mots à relire (voir :mod:`api.review`)."""
 
 
 def _append(doc: _Doc, items: list[str | _Image]) -> None:
@@ -264,20 +269,53 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def _anonymize(text: str, found: int, skipped: int,
-               progress: Optional[ProgressCallback]) -> ProcessedFile:
+@dataclass
+class Extraction:
+    """Texte d'un document, prêt à être anonymisé."""
+
+    text: str
+    ocr_images: int = 0
+    skipped_images: int = 0
+
+
+def _finish(text: str, found: int, skipped: int) -> Extraction:
     cleaned = _clean_text(text)
     try:
         check_text_length(cleaned)
     except TextTooLongError as exc:
         raise DocumentTooLongError(str(exc)) from exc
-    anonymized = anonymize_text(cleaned, progress=progress)
-    return ProcessedFile(anonymized.encode("utf-8"), ocr_images=found, skipped_images=skipped)
+    return Extraction(cleaned, found, skipped)
 
 
-def _process_doc(doc: _Doc, progress: Optional[ProgressCallback]) -> ProcessedFile:
-    text, found, skipped = _render(doc, progress)
-    return _anonymize(text, found, skipped, progress)
+_TABLE_ROW_RE = re.compile(r"\|.*\|")
+
+
+def to_markdown(text: str) -> str:
+    """Met en forme le texte anonymisé en Markdown, sans changer un mot.
+
+    Chaque ligne du texte extrait est un paragraphe (ou un titre ``#``, une
+    ligne de tableau) : une ligne vide les sépare, sauf entre deux lignes
+    d'un même tableau. Le retrait en début de ligne est retiré (il ferait un
+    bloc de code).
+    """
+    out: list[str] = []
+    previous_row = False
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        row = _TABLE_ROW_RE.fullmatch(line) is not None
+        if out and not (row and previous_row):
+            out.append("")
+        out.append(line)
+        previous_row = row
+    return "\n".join(out) + "\n"
+
+
+def _anonymize(extraction: Extraction, progress: Optional[ProgressCallback]) -> ProcessedFile:
+    anonymized, review = anonymize_with_review(extraction.text, progress=progress)
+    return ProcessedFile(to_markdown(anonymized).encode("utf-8"), ocr_images=extraction.ocr_images,
+                         skipped_images=extraction.skipped_images, review=review)
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +339,10 @@ def _decode_text(content: bytes) -> str:
         return content.decode("latin-1")
 
 
-def process_txt(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
+def _extract_txt(content: bytes, progress: Optional[ProgressCallback]) -> tuple[str, int, int]:
     doc = _Doc()
     doc.text(_decode_text(content))
-    return _process_doc(doc, progress)
+    return _render(doc, progress)
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +373,176 @@ _V_IMAGEDATA = _q("v", "imagedata")
 _MC_FALLBACK = _q("mc", "Fallback")
 _R_EMBED, _R_ID = _q("r", "embed"), _q("r", "id")
 _W_TYPE = _q("w", "type")
+_W_VAL = _q("w", "val")
+
+
+# --- Numérotation automatique (listes « 1. », « a) », puces) ----------------
+
+_ROMAN = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+          (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
+
+
+def _format_number(n: int, fmt: str) -> str:
+    """Numéro de liste Word dans le format ``w:numFmt`` donné."""
+    if fmt in ("none", "bullet"):
+        return ""
+    if fmt in ("lowerLetter", "upperLetter"):
+        letters = ""
+        while n > 0:
+            n, rest = divmod(n - 1, 26)
+            letters = chr(ord("a") + rest) + letters
+        return letters if fmt == "lowerLetter" else letters.upper()
+    if fmt in ("lowerRoman", "upperRoman"):
+        roman = ""
+        for value, digits in _ROMAN:
+            while n >= value:
+                roman += digits
+                n -= value
+        return roman if fmt == "upperRoman" else roman.lower()
+    if fmt == "decimalZero":
+        return f"{n:02d}"
+    if fmt == "ordinal":
+        return f"{n}er" if n == 1 else f"{n}e"
+    return str(n)
+
+
+def _bullet(symbol: str) -> str:
+    """Puce Word → caractère lisible (les polices Symbol / Wingdings utilisent
+    la zone d'usage privé : «  » est une puce ronde)."""
+    if not symbol or any(0xE000 <= ord(ch) <= 0xF8FF for ch in symbol):
+        return "•"
+    return "◦" if symbol == "o" else symbol
+
+
+class _Numbering:
+    """Numéros des paragraphes de listes Word (``w:numPr`` direct ou hérité
+    du style) : ils ne figurent pas dans le texte et étaient perdus."""
+
+    def __init__(self, document) -> None:
+        self.levels: dict[tuple[str, int], tuple[str, str, int]] = {}
+        self.abstract: dict[str, str] = {}
+        self.restart: dict[str, dict[int, int]] = {}
+        self.style_numbering: dict[str, tuple[str, Optional[int]]] = {}
+        self.counters: dict[str, dict[int, int]] = {}
+        self.started: set[str] = set()
+        try:
+            root = document.part.numbering_part.element
+        except (KeyError, NotImplementedError, AttributeError):
+            root = None
+        if root is not None:
+            abstract_levels: dict[str, dict[int, tuple[str, str, int]]] = {}
+            for abstract in root.iter(_q("w", "abstractNum")):
+                levels = abstract_levels.setdefault(abstract.get(_q("w", "abstractNumId")), {})
+                for lvl in abstract.findall(_q("w", "lvl")):
+                    levels[int(lvl.get(_q("w", "ilvl"), "0"))] = (
+                        self._val(lvl, "numFmt", "decimal"), self._val(lvl, "lvlText", ""),
+                        int(self._val(lvl, "start", "1") or 1),
+                    )
+            for num in root.iter(_q("w", "num")):
+                num_id = num.get(_q("w", "numId"))
+                abstract_id = self._val(num, "abstractNumId", "")
+                self.abstract[num_id] = abstract_id
+                for ilvl, level in abstract_levels.get(abstract_id, {}).items():
+                    self.levels[(num_id, ilvl)] = level
+                for override in num.findall(_q("w", "lvlOverride")):
+                    start = override.find(_q("w", "startOverride"))
+                    if start is not None:
+                        self.restart.setdefault(num_id, {})[
+                            int(override.get(_q("w", "ilvl"), "0"))] = int(start.get(_W_VAL, "1"))
+        try:
+            styles = document.styles.element
+        except AttributeError:
+            styles = None
+        if styles is not None:
+            raw: dict[str, tuple[Optional[str], Optional[int], Optional[str]]] = {}
+            for style in styles.iter(_q("w", "style")):
+                num_pr = style.find(f"{_q('w', 'pPr')}/{_q('w', 'numPr')}")
+                num_id = ilvl = None
+                if num_pr is not None:
+                    num_id = self._val(num_pr, "numId", None)
+                    level = self._val(num_pr, "ilvl", None)
+                    ilvl = int(level) if level is not None else None
+                based_on = self._val(style, "basedOn", None)
+                raw[style.get(_q("w", "styleId"))] = (num_id, ilvl, based_on)
+            for style_id in raw:
+                seen, current = set(), style_id
+                while current in raw and current not in seen:
+                    seen.add(current)
+                    num_id, ilvl, based_on = raw[current]
+                    if num_id is not None:
+                        self.style_numbering[style_id] = (num_id, ilvl)
+                        break
+                    current = based_on
+
+    @staticmethod
+    def _val(element, tag: str, default):
+        child = element.find(_q("w", tag))
+        return child.get(_W_VAL, default) if child is not None else default
+
+    def label(self, p) -> str:
+        """Numéro (« 2. », « b) », « • ») du paragraphe ``p``, ou ""."""
+        ppr = p.find(_q("w", "pPr"))
+        num_id = ilvl = None
+        if ppr is not None:
+            num_pr = ppr.find(_q("w", "numPr"))
+            if num_pr is not None:
+                num_id = self._val(num_pr, "numId", None)
+                level = self._val(num_pr, "ilvl", None)
+                ilvl = int(level) if level is not None else None
+            if num_id is None:
+                style = self._val(ppr, "pStyle", None)
+                if style in self.style_numbering:
+                    num_id, style_level = self.style_numbering[style]
+                    ilvl = ilvl if ilvl is not None else style_level
+        if not num_id or num_id == "0":
+            return ""
+        ilvl = ilvl or 0
+        level = self.levels.get((num_id, ilvl))
+        if level is None:
+            return ""
+        fmt, text, start = level
+        if fmt == "bullet":
+            return _bullet(text)
+        key = self.abstract.get(num_id, num_id)
+        counters = self.counters.setdefault(key, {})
+        if num_id not in self.started and num_id in self.restart:
+            for lvl, value in self.restart[num_id].items():
+                counters[lvl] = value - 1
+        self.started.add(num_id)
+        counters[ilvl] = counters.get(ilvl, start - 1) + 1
+        for deeper in [lvl for lvl in counters if lvl > ilvl]:
+            del counters[deeper]  # sous-niveaux : recommencent à leur début
+
+        def number(match: re.Match) -> str:
+            lvl = int(match.group(1)) - 1
+            lvl_fmt, _, lvl_start = self.levels.get((num_id, lvl), ("decimal", "", 1))
+            return _format_number(counters.get(lvl, lvl_start), lvl_fmt)
+
+        return re.sub(r"%(\d)", number, text).strip()
+
+
+_HEADING_STYLE_RE = re.compile(r"(?i)(?:heading|titre|kop)[ \t]*([1-6])$")
+
+
+def _heading_levels(document) -> dict[str, int]:
+    """Styles de titre du document (« Heading 2 », « Titre 2 », « Title ») →
+    niveau, restitué en Markdown (``## ``)."""
+    levels: dict[str, int] = {}
+    try:
+        styles = list(document.styles)
+    except Exception:  # noqa: BLE001 — styles illisibles : pas de titres
+        return levels
+    for style in styles:
+        name = (getattr(style, "name", "") or "").strip()
+        style_id = getattr(style, "style_id", None)
+        if not style_id:
+            continue
+        m = _HEADING_STYLE_RE.search(name)
+        if m:
+            levels[style_id] = int(m.group(1))
+        elif name.lower() in ("title", "titre"):
+            levels[style_id] = 1
+    return levels
 
 
 class _DocxReader:
@@ -343,6 +551,20 @@ class _DocxReader:
     def __init__(self, document) -> None:
         self.document = document
         self.seen_images: set[str] = set()
+        self.numbering = _Numbering(document)
+        self.heading_levels = _heading_levels(document)
+
+    def heading_level(self, p) -> int:
+        """Niveau de titre du paragraphe (1 à 6), 0 pour du texte courant."""
+        ppr = p.find(_q("w", "pPr"))
+        if ppr is None:
+            return 0
+        outline = ppr.find(_q("w", "outlineLvl"))
+        if outline is not None and (outline.get(_W_VAL) or "").isdigit():
+            level = int(outline.get(_W_VAL)) + 1
+            return level if level <= 6 else 0
+        style = ppr.find(_q("w", "pStyle"))
+        return self.heading_levels.get(style.get(_W_VAL), 0) if style is not None else 0
 
     # --- Images -------------------------------------------------------------
 
@@ -410,28 +632,48 @@ class _DocxReader:
                     visit(c)
 
         visit(p)
-        doc.text("".join(texts))
+        text = "".join(texts)
+        label = self.numbering.label(p) if text.strip() else ""
+        if label:
+            text = f"{label} {text.lstrip()}"
+        level = self.heading_level(p) if text.strip() and "\n" not in text.strip() else 0
+        doc.text(f"{'#' * level} {text.strip()}" if level else text)
         for box in nested:
             self.blocks(box, part, doc)
         for data in images:
             doc.image(_Image(data))
 
     def _table(self, tbl, part, doc: _Doc) -> None:
+        """Tableau Markdown (« | a | b | ») ; les cellules vides sont gardées
+        pour que les colonnes restent alignées. Un tableau d'une seule colonne
+        (mise en page : cadre, en-tête) est restitué en paragraphes."""
+        rows: list[list[str]] = []
+        images: list[_Image] = []
         for tr in tbl.iter(_W_TR):
             if tr.getparent() is not tbl:
                 continue  # lignes d'un tableau imbriqué : traitées via la cellule
             cells: list[str] = []
-            row_images: list[_Image] = []
             for tc in tr.findall(_W_TC):
                 sub = _Doc()
                 self.blocks(tc, part, sub)
-                cell_text = " ".join(sub.plain_text().split())
-                if cell_text:
-                    cells.append(cell_text)
-                row_images.extend(p for p in sub.parts if isinstance(p, _Image))
-            doc.text(" | ".join(cells))
-            for image in row_images:
-                doc.image(image)
+                cells.append(" ".join(sub.plain_text().split()))
+                images.extend(p for p in sub.parts if isinstance(p, _Image))
+            if any(cells):
+                rows.append(cells)
+        width = max((len(r) for r in rows), default=0)
+        if width <= 1:
+            for row in rows:
+                doc.text(row[0] if row else "")
+        else:
+            doc.section()
+            for index, row in enumerate(rows):
+                cells = [c.replace("|", "\\|") for c in row] + [""] * (width - len(row))
+                doc.text("| " + " | ".join(cells) + " |")
+                if index == 0:
+                    doc.text("|" + "---|" * width)
+            doc.section()
+        for image in images:
+            doc.image(image)
 
     # --- Parties annexes (en-têtes, pieds, notes) ---------------------------
 
@@ -500,79 +742,290 @@ def _docx_to_doc(content: bytes) -> _Doc:
     return doc
 
 
-def process_docx(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
-    return _process_doc(_docx_to_doc(content), progress)
+def _extract_docx(content: bytes, progress: Optional[ProgressCallback]) -> tuple[str, int, int]:
+    return _render(_docx_to_doc(content), progress)
 
 
 # ---------------------------------------------------------------------------
-# PDF
+# PDF : reconstruction de la mise en page
 # ---------------------------------------------------------------------------
+#
+# Un PDF ne contient pas de paragraphes, seulement des fragments de texte
+# positionnés. Les PDF exportés de Word (la plupart des décisions et
+# conclusions) posent même chaque mot d'une ligne justifiée séparément, et
+# PyMuPDF range alors une même ligne dans plusieurs « lignes », voire chaque
+# ligne d'un passage en double interligne dans un bloc distinct.
+#
+# Le texte est donc reconstruit à partir des **lignes visuelles** de la page
+# (fragments à la même hauteur), puis regroupé en paragraphes :
+#
+# - une ligne qui atteint la marge droite se poursuit à la ligne suivante
+#   (même si elle finit par « : » : « (ci-après : » + « la directive ») ;
+# - une ligne vide (exports Word), une puce ou un numéro de liste après une
+#   fin de phrase, un retrait de première ligne, un titre centré ou en gras
+#   commencent un nouveau paragraphe ;
+# - deux colonnes sur une même ligne (signatures « Le greffier, … Le
+#   président, ») sont séparées par une tabulation, jamais recollées ;
+# - un trait d'union en fin de ligne est conservé (« avocat-intermédiaire »,
+#   « eux-mêmes », « 2019-2020 »), sauf césure avérée (« conven-tionnelles ») ;
+# - les en-têtes et pieds de page répétés ne sont gardés qu'une fois et les
+#   numéros de page sont retirés : ils ne coupent plus les phrases qui se
+#   poursuivent sur la page suivante.
 
 _PDF_TEXT_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
-_SENTENCE_END = (".", ":", ";", "!", "?", "»", '"')
+_SENTENCE_END = (".", ":", ";", "!", "?", "»", '"', "”")
+
+_MARGIN_ZONE = 0.09
+"""Part de la hauteur de page où se trouvent en-têtes et pieds de page."""
+
+_LIST_MARKER_RE = re.compile(
+    r"[«\"“(]?[ \t]*(?:"
+    r"[-–—•·▪◦●○■□➢►✓*][ \t]"                       # puces
+    r"|(?:[a-z]|\d{1,3})[.)°][ \t]"                    # a.  1.  b)  2°
+    r"|(?:II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI)\.[ \t]"  # II.  IV. (pas « I. », « V. » : initiales)
+    r"|\((?:[a-z]|\d{1,3}|[ivx]{1,5})\)[ \t]"          # (a)  (1)  (iv)
+    r"|[A-Z]\.\d{1,3}(?:\.\d{1,3})*\.[ \t]"            # A.1.  B.6.2.
+    r"|\d{1,3}(?:\.\d{1,3})+\.?[ \t]"                  # 1.2  3.1.4.
+    r")"
+)
+"""Début de ligne marquant un élément de liste ou un paragraphe numéroté."""
+
+_PAGE_NUMBER_RE = re.compile(
+    r"(?i)(?:page|p\.)?[ \t]*[-–—]?[ \t]*\d{1,4}[ \t]*(?:(?:/|sur|de|of)[ \t]*\d{1,4})?[ \t]*[-–—]?"
+)
 
 
-def _join_lines(lines: list[tuple[str, tuple]]) -> str:
-    """Recolle les lignes d'un bloc PDF coupées par la mise en page.
-
-    Une ligne qui atteint (presque) la marge droite du bloc et ne se termine
-    pas par une ponctuation forte est la suite du même paragraphe : elle est
-    recollée (avec suppression de la césure « conven-/tionnelles »). Les
-    lignes courtes (adresses, listes) restent séparées.
-    """
-    if not lines:
-        return ""
-    x0 = min(b[0] for _, b in lines)
-    x1 = max(b[2] for _, b in lines)
-    width = max(x1 - x0, 1.0)
-    out = lines[0][0].rstrip()
-    for (prev, pbox), (cur, cbox) in zip(lines, lines[1:]):
-        prev, cur = prev.rstrip(), cur.strip()
-        if not cur:
-            continue
-        same_row = abs(cbox[1] - pbox[1]) < 2
-        wraps = (pbox[2] - x0) >= 0.8 * width and not prev.endswith(_SENTENCE_END)
-        continues = cur[:1].islower() and not prev.endswith(_SENTENCE_END)
-        if same_row:
-            out += " " + cur
-        elif wraps or continues:
-            last_token = prev.split()[-1] if prev.split() else ""
-            if prev.endswith("-") and len(prev) > 1 and prev[-2].isalpha():
-                if cur[:1].islower() and not re.search(r"[@/.]|www", last_token):
-                    out = out[:-1] + cur  # césure : « conven-tionnelles »
-                else:
-                    out += cur  # trait d'union réel : « Jean-Pierre », e-mail
-            else:
-                out += " " + cur
-        else:
-            out += "\n" + cur
-    return out
+@dataclass
+class _Segment:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    size: float
+    bold: bool
 
 
-def _continues_paragraph(previous: str, following: str) -> bool:
-    """Vrai si ``following`` (début de page) prolonge la phrase ``previous``."""
-    last, first = previous.rstrip(), following.lstrip()
-    return bool(last and first) and not last.endswith(_SENTENCE_END) and (
-        first[:1].islower() or first[:1].isdigit()
-    )
+@dataclass
+class _Row:
+    """Ligne visuelle d'une page (fragments alignés sur une même hauteur)."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    size: float
+    bold: bool = False
+    columns: bool = False
+    """Vrai si la ligne contient plusieurs colonnes (séparées par une tabulation)."""
+
+    @property
+    def blank(self) -> bool:
+        return not self.text.strip()
 
 
-def _page_text_blocks(page) -> list[tuple[tuple, str]]:
-    """Blocs de texte (bbox, texte) d'une page, dans l'ordre de lecture."""
-    data = page.get_text("dict", flags=_PDF_TEXT_FLAGS, sort=True)
-    blocks = []
+@dataclass
+class _PageLayout:
+    rows: list[_Row]
+    width: float
+    height: float
+    left: float = 0.0
+    right: float = 0.0
+    garbled: bool = False
+    """Couche texte illisible (police sans table de caractères) : page à lire par OCR."""
+
+
+@dataclass
+class _Paragraph:
+    text: str
+    first: _Row
+    last: _Row
+
+
+def _segments(page) -> list[_Segment]:
+    data = page.get_text("dict", flags=_PDF_TEXT_FLAGS)
+    segments: list[_Segment] = []
     for block in data.get("blocks", []):
         if block.get("type", 0) != 0:
             continue
-        lines = []
         for line in block.get("lines", []):
-            text = "".join(span.get("text", "") for span in line.get("spans", []))
-            if text.strip():
-                lines.append((text, line["bbox"]))
-        text = _join_lines(lines)
-        if text.strip():
-            blocks.append((tuple(block["bbox"]), text))
-    return blocks
+            spans = [s for s in line.get("spans", []) if s.get("text")]
+            if not spans:
+                continue
+            inked = [s for s in spans if s["text"].strip()]
+            x0, y0, x1, y1 = line["bbox"]
+            segments.append(_Segment(
+                x0, y0, x1, y1, "".join(s["text"] for s in spans),
+                max((s["size"] for s in inked), default=spans[0]["size"]),
+                bool(inked) and all(s.get("flags", 0) & 16 for s in inked),
+            ))
+    return segments
+
+
+def _make_row(segments: list[_Segment], column_gap: float) -> _Row:
+    """Assemble les fragments d'une ligne visuelle (de gauche à droite)."""
+    segments = sorted(segments, key=lambda s: s.x0)
+    inked = [s for s in segments if s.text.strip()]
+    if not inked:
+        s = segments[0]
+        return _Row(s.x0, s.y0, s.x1, s.y1, "", s.size)
+    gaps = [b.x0 - a.x1 for a, b in zip(inked, inked[1:])]
+    # Ligne justifiée (mots posés un par un) : espaces réguliers, pas des colonnes.
+    ordered = sorted(gaps)
+    justified = len(gaps) >= 2 and ordered[-1] <= 2.5 * max(ordered[len(ordered) // 2], 1.0)
+    text = inked[0].text
+    columns = False
+    for prev, seg, gap in zip(inked, inked[1:], gaps):
+        piece = seg.text
+        if gap > column_gap and not justified:
+            text = text.rstrip() + "\t" + piece.lstrip()
+            columns = True
+        elif text.endswith((" ", "\t")) or piece.startswith((" ", "\t")):
+            # L'espace final d'un fragment occupe souvent tout l'écart : c'est
+            # alors la seule trace de la séparation des mots.
+            text = text.rstrip(" ") + (" " if not text.endswith("\t") else "") + piece.lstrip(" ")
+        elif gap > 0.15 * max(prev.size, seg.size):
+            text += " " + piece
+        else:
+            text += piece
+    text = text.rstrip()
+    return _Row(
+        min(s.x0 for s in inked), min(s.y0 for s in inked), max(s.x1 for s in inked),
+        max(s.y1 for s in inked), text, max(s.size for s in inked),
+        all(s.bold for s in inked), columns,
+    )
+
+
+def _garbled(text: str) -> bool:
+    """Vrai si la couche texte est illisible (caractères privés, de contrôle…)."""
+    chars = [ch for ch in text if not ch.isspace()]
+    if len(chars) < 20:
+        return False
+    bad = sum(1 for ch in chars
+              if ch == "�" or unicodedata.category(ch) in ("Co", "Cc", "Cn", "Cs"))
+    return bad > 0.2 * len(chars)
+
+
+def _page_layout(page) -> _PageLayout:
+    """Lignes visuelles d'une page et marges du texte."""
+    width, height = page.rect.width, page.rect.height
+    column_gap = max(48.0, 0.1 * width)
+    groups: list[list[_Segment]] = []
+    for seg in sorted(_segments(page), key=lambda s: ((s.y0 + s.y1) / 2, s.x0)):
+        if groups:
+            row = groups[-1]
+            top, bottom = min(s.y0 for s in row), max(s.y1 for s in row)
+            overlap = min(bottom, seg.y1) - max(top, seg.y0)
+            if overlap >= 0.5 * max(1.0, min(bottom - top, seg.y1 - seg.y0)):
+                row.append(seg)
+                continue
+        groups.append([seg])
+    rows = [_make_row(group, column_gap) for group in groups]
+    layout = _PageLayout(rows, width, height)
+    inked = [r for r in rows if not r.blank]
+    layout.garbled = _garbled("".join(r.text for r in inked))
+    if inked:
+        starts = Counter(round(r.x0) for r in inked)
+        layout.left = float(min(x for x, n in starts.items() if n == max(starts.values())))
+        ends = sorted(r.x1 for r in inked if len(r.text) >= 20) or sorted(r.x1 for r in inked)
+        layout.right = max(ends[int(0.9 * (len(ends) - 1))], layout.left + 0.55 * width)
+    return layout
+
+
+def _margin_zone(row: _Row, layout: _PageLayout) -> Optional[str]:
+    if row.y1 <= _MARGIN_ZONE * layout.height:
+        return "top"
+    if row.y0 >= (1 - _MARGIN_ZONE) * layout.height:
+        return "bottom"
+    return None
+
+
+def _is_centered(row: _Row, layout: _PageLayout) -> bool:
+    width = max(layout.right - layout.left, 1.0)
+    if row.x0 <= layout.left + 0.08 * width or row.x1 - row.x0 >= 0.8 * width:
+        return False
+    return abs((row.x0 + row.x1) / 2 - (layout.left + layout.right) / 2) <= 0.06 * width
+
+
+def _wraps(prev: _Row, cur: _Row, layout: _PageLayout) -> bool:
+    """Vrai si le premier mot de ``cur`` n'aurait pas tenu au bout de ``prev``
+    (la ligne a donc été coupée par la mise en page, pas par l'auteur)."""
+    first = cur.text.split()[0] if cur.text.split() else ""
+    char_width = (prev.x1 - prev.x0) / max(len(prev.text.strip()), 1)
+    return layout.right - prev.x1 < 0.9 * (len(first) + 1) * char_width
+
+
+def _joins(prev: _Row, cur: _Row, layout: _PageLayout) -> bool:
+    """Vrai si ``cur`` poursuit le paragraphe terminé par ``prev``."""
+    if prev.columns or cur.columns or _is_centered(prev, layout) or _is_centered(cur, layout):
+        return False
+    if prev.bold and not cur.bold:
+        return False  # titre en gras suivi du texte
+    if abs(prev.size - cur.size) > 1.0:
+        return False
+    last, first = prev.text.rstrip(), cur.text.lstrip()
+    ends = last.endswith(_SENTENCE_END)
+    marker = _LIST_MARKER_RE.match(first) is not None
+    wraps = _wraps(prev, cur, layout)
+    if marker and (ends or not wraps):
+        return False
+    if ends and cur.x0 > layout.left + max(6.0, 0.6 * cur.size):
+        return False  # retrait de première ligne : nouveau paragraphe
+    if wraps:
+        return True
+    # Ligne courte : suite de phrase seulement si elle commence en minuscule.
+    return not ends and not marker and first[:1].islower()
+
+
+_WORD_RE = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
+
+
+def _word_counts(text: str) -> Counter:
+    return Counter(_WORD_RE.findall(text.lower()))
+
+
+def _dehyphenate(left: str, right: str, vocabulary: Counter) -> bool:
+    """Vrai si « left- » + « right » est une césure (mot coupé) et non un mot
+    composé : on regarde d'abord le reste du document, puis le lexique."""
+    joined, hyphenated = (left + right).lower(), f"{left}-{right}".lower()
+    if vocabulary[hyphenated]:
+        return False
+    if vocabulary[joined]:
+        return True
+    return known_word(joined) and not (known_word(left) and known_word(right))
+
+
+def _join_text(previous: str, following: str, vocabulary: Counter) -> str:
+    """Recolle deux lignes d'un même paragraphe."""
+    prev, cur = previous.rstrip(), following.lstrip()
+    if prev.endswith("-") and len(prev) >= 2 and prev[-2].isalnum() and cur[:1].isalnum():
+        left = re.search(r"([^\W\d_]+)-$", prev)
+        right = re.match(r"[^\W\d_]+", cur)
+        if left and right and cur[:1].islower() and _dehyphenate(left.group(1), right.group(0), vocabulary):
+            return prev[:-1] + cur  # césure : « conven-tionnelles »
+        return prev + cur  # trait d'union : « avocat-intermédiaire », « 2019-2020 »
+    return prev + " " + cur
+
+
+def _paragraphs(rows: list[_Row], layout: _PageLayout,
+                vocabulary: Counter) -> tuple[list[_Paragraph], bool]:
+    """Regroupe les lignes en paragraphes. Renvoie aussi « la page se termine
+    par une ligne vide » (le dernier paragraphe ne se poursuit pas)."""
+    paragraphs: list[_Paragraph] = []
+    blank_before = False
+    for row in rows:
+        if row.blank:
+            blank_before = True
+            continue
+        current = paragraphs[-1] if paragraphs else None
+        if current and not blank_before and _joins(current.last, row, layout):
+            current.text = _join_text(current.text, row.text, vocabulary)
+            current.last = row
+        else:
+            paragraphs.append(_Paragraph(row.text.strip(), row, row))
+        blank_before = False
+    return paragraphs, blank_before
 
 
 def _visible_text_ratio(page) -> float:
@@ -613,7 +1066,7 @@ def _page_renderer(pdf, page_number: int, clip=None, dpi: int = _PDF_DPI) -> Ima
         try:
             return _render_png(pdf, page_number, clip=rect, dpi=dpi)
         except Exception as exc:  # noqa: BLE001 — page endommagée : ignorée
-            logger.warning("Rendu impossible (page %s) : %s", page_number + 1, exc)
+            logger.warning("Rendu impossible (page %s) : %s", page_number + 1, type(exc).__name__)
             return None
 
     return render
@@ -659,6 +1112,13 @@ class _PdfState:
 
     ocr_budget: int = field(default_factory=lambda: MAX_OCR_PAGES)
     seen_xrefs: set[int] = field(default_factory=set)
+    layouts: dict[int, Optional[_PageLayout]] = field(default_factory=dict)
+    vocabulary: Counter = field(default_factory=Counter)
+    """Mots du document (minuscules) : tranche les césures de fin de ligne."""
+    margin_keep: dict[tuple[int, int], str] = field(default_factory=dict)
+    """En-têtes / pieds de page gardés (première occurrence) : (page, ligne) → zone."""
+    margin_drop: set[tuple[int, int]] = field(default_factory=set)
+    """Répétitions d'en-têtes / pieds de page et numéros de page, retirés."""
 
     def take_ocr_slot(self) -> bool:
         if self.ocr_budget <= 0:
@@ -667,11 +1127,97 @@ class _PdfState:
         return True
 
 
-def _page_items(pdf, page, state: _PdfState) -> list[str | _Image]:
-    """Blocs de texte et images d'une page, dans l'ordre de lecture."""
+def _margin_key(text: str) -> str:
+    return re.sub(r"\d+", "#", " ".join(text.split()))
+
+
+def _read_layouts(pdf, state: _PdfState, progress: Optional[ProgressCallback]) -> None:
+    """Première lecture : lignes de chaque page, vocabulaire, en-têtes répétés.
+
+    Un document trop long est refusé dès que la limite est franchie.
+    """
+    page_count = pdf.page_count
+    report(progress, "extract", 0, page_count)
+    length = 0
+    for number in range(page_count):
+        try:
+            layout = _page_layout(pdf[number])
+        except Exception as exc:  # noqa: BLE001 — page corrompue : signalée plus loin
+            logger.warning("Page %s illisible : %s", number + 1, type(exc).__name__)
+            layout = None
+        state.layouts[number] = layout
+        if layout is not None:
+            text = "\n".join(row.text for row in layout.rows if not row.blank)
+            length += len(text) + 1
+            if length > settings.MAX_TEXT_CHARS:
+                raise DocumentTooLongError(str(TextTooLongError()))
+            state.vocabulary.update(_word_counts(text))
+        report(progress, "extract", number + 1, page_count)
+
+    # En-têtes et pieds de page : texte identique (aux chiffres près) dans la
+    # marge haute ou basse d'au moins deux pages.
+    pages_by_key: dict[str, set[int]] = {}
+    candidates: list[tuple[int, int, str, str]] = []
+    for number, layout in state.layouts.items():
+        if layout is None:
+            continue
+        for index, row in enumerate(layout.rows):
+            zone = None if row.blank else _margin_zone(row, layout)
+            if zone is None:
+                continue
+            page_number = _PAGE_NUMBER_RE.fullmatch(row.text.strip())
+            if page_number and int(re.search(r"\d+", page_number.group(0)).group(0)) <= page_count:
+                state.margin_drop.add((number, index))  # numéro de page
+                continue
+            key = _margin_key(row.text)
+            pages_by_key.setdefault(key, set()).add(number)
+            candidates.append((number, index, key, zone))
+    first_seen: set[str] = set()
+    for number, index, key, zone in candidates:
+        if len(pages_by_key[key]) < 2:
+            continue  # texte propre à la page : contenu normal
+        if key in first_seen:
+            state.margin_drop.add((number, index))
+        else:
+            first_seen.add(key)
+            state.margin_keep[(number, index)] = zone
+
+
+@dataclass
+class _PageContent:
+    """Contenu d'une page, dans l'ordre de lecture."""
+
+    items: list[str | _Image] = field(default_factory=list)
+    header: list[str] = field(default_factory=list)
+    footer: list[str] = field(default_factory=list)
+    """En-têtes / pieds de page conservés : placés après le paragraphe en cours."""
+    first_row: Optional[_Row] = None
+    """Première ligne de la page si elle commence par un paragraphe."""
+    last_row: Optional[_Row] = None
+    """Dernière ligne de la page si elle finit par un paragraphe non clos."""
+    layout: Optional[_PageLayout] = None
+
+
+def _page_items(pdf, page, state: _PdfState) -> _PageContent:
+    """Paragraphes et images d'une page, dans l'ordre de lecture."""
     number = page.number
-    blocks = _page_text_blocks(page)
-    native = "\n".join(text for _, text in blocks)
+    layout = state.layouts.get(number)
+    if layout is None:
+        layout = _page_layout(page)
+    content = _PageContent(layout=layout)
+    body: list[_Row] = []
+    for index, row in enumerate(layout.rows):
+        if (number, index) in state.margin_drop:
+            continue
+        zone = state.margin_keep.get((number, index))
+        if zone == "top":
+            content.header.append(row.text.strip())
+        elif zone == "bottom":
+            content.footer.append(row.text.strip())
+        else:
+            body.append(row)
+    paragraphs, ends_blank = _paragraphs(body, layout, state.vocabulary)
+    native = "\n".join(p.text for p in paragraphs)
     alnum = sum(ch.isalnum() for ch in native)
     page_area = max(page.rect.width * page.rect.height, 1)
     images = [
@@ -679,13 +1225,15 @@ def _page_items(pdf, page, state: _PdfState) -> list[str | _Image]:
         if fitz.Rect(info["bbox"]).intersects(page.rect)
     ]
     items: list[tuple[float, float, str | _Image]] = [
-        (bbox[1], bbox[0], text) for bbox, text in blocks
+        (p.first.y0, p.first.x0, p) for p in paragraphs
     ]
 
-    if alnum < 25 and (images or page.get_drawings()):
-        # Page scannée (ou texte vectorisé) : OCR de la page entière. Le peu
-        # de texte natif (légende, n° de page) sert à écarter un OCR qui ne
-        # ferait que le répéter.
+    if layout.garbled or (alnum < 25 and (images or page.get_drawings())):
+        # Page scannée, texte vectorisé ou couche texte illisible : OCR de la
+        # page entière. Le peu de texte natif lisible (légende, n° de page)
+        # sert à écarter un OCR qui ne ferait que le répéter.
+        if layout.garbled:
+            items, native = [], ""
         if state.take_ocr_slot():
             native_words = frozenset(_ocr_words(native))
             items.append((0.0, 0.0, _Image(_page_renderer(pdf, number), native_words=native_words)))
@@ -713,7 +1261,17 @@ def _page_items(pdf, page, state: _PdfState) -> list[str | _Image]:
             items.append((rect.y0, rect.x0, _Image(renderer, native_words=native_words)))
 
     items.sort(key=lambda it: (round(it[0]), it[1]))
-    return [item for _, _, item in items] + _pdf_extras(page)
+    ordered = [item for _, _, item in items]
+    if ordered and isinstance(ordered[0], _Paragraph):
+        content.first_row = ordered[0].first
+    if ordered and isinstance(ordered[-1], _Paragraph) and not ends_blank:
+        content.last_row = ordered[-1].last
+    content.items = [p.text if isinstance(p, _Paragraph) else p for p in ordered]
+    extras = _pdf_extras(page)
+    if extras:
+        content.items += extras
+        content.last_row = None
+    return content
 
 
 def _pdf_to_doc(pdf, progress: Optional[ProgressCallback] = None) -> _Doc:
@@ -724,35 +1282,44 @@ def _pdf_to_doc(pdf, progress: Optional[ProgressCallback] = None) -> _Doc:
     """
     doc = _Doc()
     state = _PdfState()
-    page_count = pdf.page_count
-    report(progress, "extract", 0, page_count)
-    for number in range(page_count):
+    _read_layouts(pdf, state, progress)
+    previous: Optional[_PageContent] = None
+    pending: list[str] = []  # pieds de page conservés, placés après le paragraphe en cours
+    for number in range(pdf.page_count):
         try:
-            ordered = _page_items(pdf, pdf[number], state)
+            content = _page_items(pdf, pdf[number], state)
         except Exception as exc:  # noqa: BLE001 — page corrompue : signalée, ignorée
-            logger.warning("Page %s illisible : %s", number + 1, exc)
-            ordered = [ocr.UNREADABLE_PAGE]
-        previous = doc.parts[-1] if doc.parts else None
-        if (ordered and isinstance(ordered[0], str) and isinstance(previous, str)
-                and _continues_paragraph(previous, ordered[0])):
+            logger.warning("Page %s illisible : %s", number + 1, type(exc).__name__)
+            content = _PageContent(items=[ocr.UNREADABLE_PAGE])
+        items = list(content.items)
+        if (previous is not None and previous.last_row is not None
+                and content.first_row is not None and previous.layout is not None
+                and doc.parts and isinstance(doc.parts[-1], str)
+                and _joins(previous.last_row, content.first_row, previous.layout)):
             # Phrase coupée par un saut de page (« né le 10 mai | 1988 ») :
-            # recollée pour que la date / le nom restent détectables.
-            doc.continue_last(ordered.pop(0))
+            # recollée pour que la date ou le nom restent détectables.
+            doc.continue_last(items.pop(0),
+                              join=lambda a, b: _join_text(a, b, state.vocabulary))
+        for line in pending + content.header:
+            doc.section()
+            doc.text(line)
+        pending = list(content.footer)
         doc.section()  # une page = un bloc
-        _append(doc, ordered)
-        report(progress, "extract", number + 1, page_count)
+        _append(doc, items)
+        previous = content
+    for line in pending:
+        doc.section()
+        doc.text(line)
     return doc
 
 
-def process_pdf(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
+def _extract_pdf(content: bytes, progress: Optional[ProgressCallback]) -> tuple[str, int, int]:
     pdf = _open_pdf(content)
     try:
         # Le PDF reste ouvert pendant l'OCR : les pages y sont rendues à la demande.
-        doc = _pdf_to_doc(pdf, progress)
-        text, found, skipped = _render(doc, progress)
+        return _render(_pdf_to_doc(pdf, progress), progress)
     finally:
         pdf.close()
-    return _anonymize(text, found, skipped, progress)
 
 
 # ---------------------------------------------------------------------------
@@ -792,17 +1359,50 @@ def _image_to_doc(content: bytes) -> _Doc:
     return doc
 
 
-def process_image(content: bytes, progress: Optional[ProgressCallback] = None) -> ProcessedFile:
-    doc = _image_to_doc(content)
-    text, found, skipped = _render(doc, progress)
-    if not text.strip():
-        text = NO_TEXT_IN_IMAGE
-    return _anonymize(text, found, skipped, progress)
+def _extract_image(content: bytes, progress: Optional[ProgressCallback]) -> tuple[str, int, int]:
+    text, found, skipped = _render(_image_to_doc(content), progress)
+    return (text if text.strip() else NO_TEXT_IN_IMAGE), found, skipped
 
 
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
+
+def extract(filename: str, content: bytes,
+            progress: Optional[ProgressCallback] = None) -> Extraction:
+    """Convertit un fichier en texte (extraction, OCR), selon son extension.
+
+    Raises
+    ------
+    FileProcessingError
+        Format non supporté, fichier protégé, illisible ou trop long.
+    api.progress.Cancelled
+        Levée par ``progress`` pour interrompre le traitement.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".txt":
+        return _finish(*_extract_txt(content, progress))
+    if ext == ".docx":
+        return _finish(*_extract_docx(content, progress))
+    if ext == ".pdf":
+        return _finish(*_extract_pdf(content, progress))
+    if ext in IMAGE_EXTENSIONS:
+        return _finish(*_extract_image(content, progress))
+    if ext in (".doc", ".odt", ".rtf", ".pages"):
+        raise FileProcessingError(
+            f"Format {ext} non supporté : enregistrez le document en .docx ou .pdf."
+        )
+    raise FileProcessingError(
+        f"Format non supporté : {ext or '(aucune extension)'}. "
+        "Formats acceptés : .txt, .docx, .pdf, images (.png, .jpg…)."
+    )
+
+
+def extract_text(filename: str, content: bytes,
+                 progress: Optional[ProgressCallback] = None) -> str:
+    """Texte du document tel qu'il est anonymisé (voir :func:`extract`)."""
+    return extract(filename, content, progress).text
+
 
 def process_file(filename: str, content: bytes,
                  progress: Optional[ProgressCallback] = None) -> ProcessedFile:
@@ -824,20 +1424,4 @@ def process_file(filename: str, content: bytes,
     api.progress.Cancelled
         Levée par ``progress`` pour interrompre le traitement.
     """
-    ext = os.path.splitext(filename)[1].lower()
-    if ext == ".txt":
-        return process_txt(content, progress)
-    if ext == ".docx":
-        return process_docx(content, progress)
-    if ext == ".pdf":
-        return process_pdf(content, progress)
-    if ext in IMAGE_EXTENSIONS:
-        return process_image(content, progress)
-    if ext in (".doc", ".odt", ".rtf", ".pages"):
-        raise FileProcessingError(
-            f"Format {ext} non supporté : enregistrez le document en .docx ou .pdf."
-        )
-    raise FileProcessingError(
-        f"Format non supporté : {ext or '(aucune extension)'}. "
-        "Formats acceptés : .txt, .docx, .pdf, images (.png, .jpg…)."
-    )
+    return _anonymize(extract(filename, content, progress), progress)

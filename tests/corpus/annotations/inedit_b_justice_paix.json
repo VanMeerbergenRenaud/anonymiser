@@ -1,0 +1,68 @@
+{
+  "document": "inedit_b_justice_paix.txt",
+  "set": "inédit",
+  "description": "Jugement fictif de justice de paix (bail). Jeu inédit B : écrit après les corrections, mesuré une seule fois avant toute retouche.",
+  "mask": {
+    "PERSONNE": [
+      "Thomas",
+      "Vandeputte",
+      "Chloé",
+      "Delcourt",
+      "Patrick",
+      "Emma",
+      "Anne-Sophie",
+      "Février",
+      "Kevin",
+      "Mathy"
+    ],
+    "ADRESSE": [
+      "Drève de Lorraine 18",
+      "rue Vanderkindere 245 boîte 2",
+      "1180 Uccle"
+    ],
+    "DATE_NAISSANCE": [
+      "30 novembre 1960"
+    ],
+    "IBAN": [
+      "BE12 3631 2345 6792"
+    ],
+    "RÉFÉRENCE_DOSSIER": [
+      "2024/1532"
+    ],
+    "NUMÉRO_RÔLE": [
+      "24A789"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "JUSTICE DE PAIX DU CANTON D'UCCLE",
+    "PAR CES MOTIFS",
+    "7 octobre 2024",
+    "mars 2024",
+    "juge de paix",
+    "caution solidaire",
+    "son père"
+  ],
+  "same_label": [
+    [
+      "Thomas Vandeputte",
+      "M. {Vandeputte}"
+    ],
+    [
+      "Chloé Delcourt",
+      "Mme {Delcourt}"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Thomas Vandeputte",
+      "Mademoiselle {Chloé Delcourt}",
+      "Monsieur {Patrick Delcourt}",
+      "Anne-Sophie Février",
+      "Kevin Mathy",
+      "Sa colocataire, {Emma}"
+    ]
+  ]
+}

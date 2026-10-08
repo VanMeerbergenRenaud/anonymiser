@@ -1,0 +1,18 @@
+{
+  "document": "scan_tampon.pdf",
+  "needs_ocr": true,
+  "description": "Page scannée fictive (image seule) : blason, texte, tampon du greffe « RG 21/123/A », signature manuscrite sur le nom du greffier.",
+  "mask": {
+    "PERSONNE": ["Luc", "FRANSSEN", "Anne", "LEBRUN", "re:\\bHard\\w*"],
+    "ADRESSE": ["Rue du Pont 8", "Ardennes 31", "re:4500 Huy"],
+    "TÉLÉPHONE": ["0496/55.21.08"],
+    "IBAN": ["BE50 0682 1234 5601"],
+    "NUMÉRO_RÔLE": ["21/123/A"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": ["JUSTICE DE PAIX DU CANTON DE HUY", "6 février 2024", "GREFFE", "1.200 euros", "re:RG \\[NUMÉRO_RÔLE\\]"],
+  "same_label": [["Luc FRANSSEN", "re:suit : Monsieur\\s+(FRANSSEN)"]],
+  "distinct_labels": [["Luc FRANSSEN", "Anne LEBRUN"]],
+  "present": ["re:RG 21/123/A", "re:--- Texte extrait d'une image"],
+  "absent": ["re:\\n\\S{1,3}\\n"]
+}

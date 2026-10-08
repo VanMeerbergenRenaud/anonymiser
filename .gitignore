@@ -49,3 +49,6 @@ server.log
 
 ./venv
 /venv
+
+# fichiers de travail locaux
+/debug/

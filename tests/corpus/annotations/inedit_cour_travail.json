@@ -1,0 +1,64 @@
+{
+  "document": "inedit_cour_travail.txt",
+  "set": "inédit",
+  "description": "Arrêt fictif de la cour du travail (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "Mertens",
+      "Thierry",
+      "EL AMRANI",
+      "El Amrani",
+      "Mohamed",
+      "Lamarche",
+      "Delvoye",
+      "Goossens",
+      "Dethier",
+      "Van Damme",
+      "Yves",
+      "re:Yves (Petit)"
+    ],
+    "ADRESSE": [
+      "avenue Jean Dubrucq 175 bte 4",
+      "1080 Molenbeek-Saint-Jean"
+    ],
+    "REGISTRE_NATIONAL": [
+      "72.01.15-123.12"
+    ],
+    "NUMÉRO_RÔLE": [
+      "2021/AB/123"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "COUR DU TRAVAIL DE BRUXELLES",
+    "SA ETHIAS",
+    "Anderlecht",
+    "C. trav. Liège",
+    "J.T.T.",
+    "S.17.0035.F",
+    "Cass., 5 février 2018",
+    "conseillers sociaux",
+    "3 mars 2019",
+    "expert judiciaire"
+  ],
+  "same_label": [
+    [
+      "Mohamed EL AMRANI",
+      "re:M\\. (El Amrani)"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Thierry Mertens",
+      "Mohamed EL AMRANI",
+      "A. Lamarche",
+      "J.-P. Delvoye",
+      "M. Goossens",
+      "C. Dethier",
+      "Van Damme",
+      "Yves Petit"
+    ]
+  ]
+}

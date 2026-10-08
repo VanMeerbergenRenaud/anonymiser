@@ -1,0 +1,53 @@
+{
+  "document": "inedit_notaire.txt",
+  "set": "inédit",
+  "description": "Comparution d'un acte notarié fictif (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "LAGAE",
+      "Jean-Philippe",
+      "DE HEMPTINNE",
+      "Jean-Marie",
+      "Ghislain",
+      "VAN DER LINDEN",
+      "Marie-Christine",
+      "Luc",
+      "re:Luc (Dubois)"
+    ],
+    "LIEU_NAISSANCE": [
+      "re:née? à (Uccle)",
+      "Gand"
+    ],
+    "DATE_NAISSANCE": [
+      "7 août 1960",
+      "3 janvier 1962"
+    ],
+    "REGISTRE_NATIONAL": [
+      "60080712345"
+    ],
+    "ADRESSE": [
+      "1180 Uccle",
+      "Avenue Brugmann 400"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "L'AN DEUX MILLE VINGT-QUATRE",
+    "le quinze mars",
+    "Par-devant Nous",
+    "ONT COMPARU",
+    "notaire à Bruxelles",
+    "son épouse",
+    "SRL"
+  ],
+  "distinct_labels": [
+    [
+      "Jean-Philippe LAGAE",
+      "DE HEMPTINNE",
+      "VAN DER LINDEN",
+      "Luc Dubois"
+    ]
+  ]
+}

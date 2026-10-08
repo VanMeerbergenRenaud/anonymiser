@@ -34,7 +34,7 @@ else
 fi
 
 echo "→ Préchargement de CamemBERT (téléchargé une seule fois, caché dans ~/.cache)"
-PYTHONPATH="${SITE}/current" ANON_NLP_BACKEND=transformers \
+PYTHONPATH="${SITE}/current" \
     "${VENV}/bin/python" -c "import api.nlp_engine"
 
 echo "→ Redémarrage du background process (adapter le nom si besoin)"

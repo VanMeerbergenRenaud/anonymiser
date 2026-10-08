@@ -1,0 +1,63 @@
+{
+  "document": "inedit_cassation.txt",
+  "set": "inédit",
+  "description": "Arrêt fictif de la Cour de cassation (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "Storck",
+      "Christian",
+      "Mireille",
+      "Delange",
+      "Michel",
+      "Lemal",
+      "Ariane",
+      "Jacquemin",
+      "Maxime",
+      "Marchandise",
+      "Patricia",
+      "De Wadripont",
+      "LEROY",
+      "Jean",
+      "Simone",
+      "Nudelholc",
+      "BLANC",
+      "Martine",
+      "Bénédicte",
+      "Inghels"
+    ],
+    "ADRESSE": [
+      "boulevard de l'Empereur, 3"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "Cour de cassation",
+    "cour d'appel de Mons",
+    "4 mai 2022",
+    "premier président",
+    "président de section",
+    "avocat général",
+    "Présents"
+  ],
+  "same_label": [
+    [
+      "Michel Lemal"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Christian Storck",
+      "Mireille Delange",
+      "Michel Lemal",
+      "Ariane Jacquemin",
+      "Maxime Marchandise",
+      "Patricia De Wadripont",
+      "LEROY Jean",
+      "Simone Nudelholc",
+      "BLANC Martine",
+      "Bénédicte Inghels"
+    ]
+  ]
+}

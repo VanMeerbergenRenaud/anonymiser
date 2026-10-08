@@ -1,0 +1,50 @@
+{
+  "document": "inedit_b_commandement.txt",
+  "set": "inédit",
+  "description": "Commandement de payer fictif. Jeu inédit B : écrit après les corrections, mesuré une seule fois avant toute retouche.",
+  "mask": {
+    "PERSONNE": [
+      "Olivier",
+      "Bastin",
+      "Laurent",
+      "Collignon",
+      "Dimitri",
+      "Lejeune",
+      "Aurélie",
+      "Lejeune-Hardy"
+    ],
+    "ADRESSE": [
+      "rue Grande 112",
+      "chemin des Saules 4",
+      "5500 Dinant"
+    ],
+    "NUMÉRO_RÔLE": [
+      "23A456"
+    ],
+    "TÉLÉPHONE": [
+      "082/22.33.71"
+    ],
+    "EMAIL": [
+      "etude.collignon@huissiers.be"
+    ]
+  },
+  "keep": [
+    "COMMANDEMENT DE PAYER",
+    "L'an deux mille vingt-quatre, le vingt-deux mai",
+    "SRL IMMOBILIÈRE DU CONDROZ",
+    "huissier de justice à Dinant",
+    "juge de paix du canton de Dinant",
+    "12 février 2024",
+    "Dont acte",
+    "3.480,00 euros",
+    "145,32 euros"
+  ],
+  "distinct_labels": [
+    [
+      "Olivier Bastin",
+      "Laurent Collignon",
+      "Dimitri Lejeune",
+      "Aurélie Lejeune-Hardy"
+    ]
+  ]
+}

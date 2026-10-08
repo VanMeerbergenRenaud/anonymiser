@@ -1,0 +1,63 @@
+{
+  "document": "inedit_conclusions.txt",
+  "set": "inédit",
+  "description": "Conclusions fictives (jeu inédit).",
+  "mask": {
+    "PERSONNE": [
+      "BEN SAÏD",
+      "Ben Saïd",
+      "Fatima",
+      "D'HONDT",
+      "Olivier",
+      "Van den Bossche",
+      "re:Monsieur (Petit)",
+      "re:Madame (Martin)",
+      "re:juge (Martin)",
+      "Simon"
+    ],
+    "ADRESSE": [
+      "Rue Josaphat 12",
+      "1030 Schaerbeek",
+      "Avenue Louise 523/12",
+      "1050 Ixelles"
+    ],
+    "EMAIL": [
+      "olivier@vdb-law.be"
+    ],
+    "URL": [
+      "www.vdb-law.be"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "SRL PETIT & FILS",
+    "Plaise au Tribunal",
+    "petit déjeuner",
+    "c. Belgique",
+    "Cour eur. D.H.",
+    "12.345,67 EUR",
+    "1. Les faits",
+    "Le témoin X. confirme",
+    "CONCLUSIONS DE SYNTHÈSE"
+  ],
+  "same_label": [
+    [
+      "Fatima BEN SAÏD",
+      "Madame {Ben Saïd}"
+    ],
+    [
+      "Olivier Van den Bossche"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Fatima BEN SAÏD",
+      "Olivier Van den Bossche",
+      "Monsieur {Petit}",
+      "Madame {Martin}",
+      "Monsieur {Simon}"
+    ]
+  ]
+}

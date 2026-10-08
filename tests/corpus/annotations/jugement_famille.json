@@ -1,0 +1,57 @@
+{
+  "document": "jugement_famille.pdf",
+  "description": "Jugement fictif du tribunal de la famille (3 pages) : famille partageant un nom, enfants, avocats, magistrats, signatures sur deux colonnes, pied de page répété, double interligne, césures.",
+  "mask": {
+    "PERSONNE": [
+      "Jean-Marc", "DUPONT", "MARCHAL", "Sophie", "Isabelle", "LECLERCQ", "Verhoeven", "Lucas",
+      "Emma", "Wauters", "Thomas", "Gérard", "Lambert"
+    ],
+    "NUMÉRO_RÔLE": ["23/4521/A"],
+    "RÉFÉRENCE_DOSSIER": ["2024/1187"],
+    "REGISTRE_NATIONAL": ["81.02.03-123.47", "83082112475"],
+    "TÉLÉPHONE": ["0475/12.34.56", "(081) 22 33 44"],
+    "EMAIL": ["jm.dupont@exemple.be"],
+    "ADRESSE": ["Glycines", "Reine Astrid", "re:5000 Namur"],
+    "IBAN": ["BE97 0012 3456 7890"],
+    "DATE_NAISSANCE": ["3 février 1981", "21 août 1983", "12 avril 2012", "5 septembre 2015"],
+    "LIEU_NAISSANCE": ["Dinant", "Ciney"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "TRIBUNAL DE PREMIÈRE INSTANCE DE LIÈGE", "Division Namur", "Tribunal de la famille",
+    "barreau de Namur", "tribunal de la famille de Namur", "Jugement du 14 mars 2024",
+    "15 février 2024", "7 juillet 2010", "1er mars 2023", "SRL Bati-Meuse",
+    "article 374, § 2, de l'ancien Code civil", "ONEM", "méthode Renard",
+    "loi du 15 juin 1935", "PAR CES MOTIFS", "procureur du Roi", "R.G. n°", "Rép. n°"
+  ],
+  "same_label": [
+    ["Jean-Marc DUPONT", "Monsieur {DUPONT} a quitté", "par Monsieur {DUPONT}"],
+    ["Sophie DUPONT-MARCHAL", "Madame {DUPONT-MARCHAL}"],
+    ["Lucas DUPONT", "enfants {Lucas}"],
+    ["Emma DUPONT", "et {Emma} sera"],
+    ["C. Wauters"], ["N. Lambert"], ["A. Gérard"]
+  ],
+  "distinct_labels": [
+    ["Jean-Marc DUPONT", "Sophie DUPONT-MARCHAL", "Thomas DUPONT", "Lucas DUPONT", "Emma DUPONT"],
+    ["N. Lambert", "A. Gérard", "C. Wauters", "P. Verhoeven", "Isabelle LECLERCQ"]
+  ],
+  "present": [
+    "re:\\nI\\. Procédure\\n",
+    "re:\\na\\. Quant à l'hébergement des enfants\\n",
+    "re:\\n1\\. Les revenus du père",
+    "re:\\n2\\. Les besoins des enfants",
+    "eux-mêmes", "conventionnelles", "(ci-après : le père)",
+    "re:le tribunal examine prioritairement la possibilité de fixer",
+    "re:Madame N\\. Lambert, greffier",
+    "re:Le greffier,\\t+La juge,",
+    "re:N\\. Lambert\\t+A\\. Gérard",
+    "R.G. n° 23/4521/A - Jugement du 14 mars 2024",
+    "re:à verser sur son compte BE97 0012 3456 7890\\.\\n"
+  ],
+  "absent": [
+    "re:Jugement du 14 mars 2024 \\d", "re:mars 2024\\n\\d\\n", "euxmêmes", "conven-",
+    "re:prioritairement\\n", "re:Madame N\\.\\n"
+  ],
+  "ignore_lines": ["re:^\\d{1,2}$"],
+  "repeated_lines": ["re:^R\\.G\\. n° 23/4521/A - Jugement du 14 mars 2024$"]
+}

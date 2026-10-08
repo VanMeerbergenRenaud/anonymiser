@@ -1,0 +1,68 @@
+{
+  "document": "inedit_b_expertise.txt",
+  "set": "inédit",
+  "description": "Rapport d'expertise médicale fictif. Jeu inédit B : écrit après les corrections, mesuré une seule fois avant toute retouche.",
+  "mask": {
+    "PERSONNE": [
+      "Véronique",
+      "Massart",
+      "Rachid",
+      "Benali",
+      "Philippe",
+      "Gérard",
+      "Mathieu",
+      "Lemaire",
+      "Samira",
+      "Jean-Louis",
+      "Vincent"
+    ],
+    "ADRESSE": [
+      "rue de Namur 33",
+      "4500 Huy"
+    ],
+    "DATE_NAISSANCE": [
+      "9 août 1971"
+    ],
+    "REGISTRE_NATIONAL": [
+      "71080912345"
+    ],
+    "NUMÉRO_RÔLE": [
+      "22/1987/A"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "RAPPORT D'EXPERTISE MÉDICALE",
+    "Tribunal du travail de Liège, division Huy",
+    "SA Carmeuse",
+    "CHR de Huy",
+    "Mac Bride",
+    "12 %",
+    "8 %",
+    "Fait à Huy",
+    "5 septembre 2024",
+    "Médecin-conseil de la mutualité"
+  ],
+  "same_label": [
+    [
+      "Véronique Massart",
+      "V. Massart"
+    ],
+    [
+      "Rachid Benali",
+      "M. {Benali}"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "Véronique Massart",
+      "Rachid Benali",
+      "Philippe Gérard",
+      "Mathieu Lemaire",
+      "Samira Benali",
+      "Jean-Louis Vincent"
+    ]
+  ]
+}

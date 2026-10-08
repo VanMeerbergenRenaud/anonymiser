@@ -41,9 +41,10 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Callable, Optional, Sequence, Union
 
 from PIL import Image, ImageOps
@@ -89,8 +90,17 @@ MARKERS: tuple[str, ...] = (
 _DEFAULT_LANGS = "fra+nld+eng"
 _TIMEOUT = settings.env_int("ANON_OCR_TIMEOUT", 90, minimum=5)
 _MIN_WORD_CONFIDENCE = 30.0
-"""Les mots reconnus avec une confiance inférieure (bruit, dessins, logos
-illisibles) sont écartés."""
+"""Les mots reconnus avec une confiance inférieure sont écartés d'emblée."""
+
+_MIN_LINE_CONFIDENCE = 55.0
+"""Confiance moyenne minimale des mots d'une ligne pour qu'elle soit gardée."""
+
+_MIN_IMAGE_CONFIDENCE = 60.0
+"""Confiance moyenne minimale du texte retenu dans une image."""
+
+_MIN_SPARSE_CONFIDENCE = 75.0
+"""Idem en mode « texte épars » (psm 11), qui invente volontiers du texte
+sur les dessins : seul un texte net (tampon, carte d'identité) est accepté."""
 
 _MAX_PIXELS = 24_000_000
 """Au-delà, l'image est réduite avant OCR (mémoire et temps de calcul)."""
@@ -111,57 +121,91 @@ class OcrResult:
     confidence: float
     """Confiance moyenne Tesseract des mots retenus (0–100)."""
 
+    solid_words: int = -1
+    """Nombre de mots « sûrs » (voir :func:`_is_solid`) ; -1 : non calculé."""
+
     @property
     def has_text(self) -> bool:
-        return sum(ch.isalnum() for ch in self.text) >= 3
+        if sum(ch.isalnum() for ch in self.text) < 3:
+            return False
+        if self.solid_words < 0:  # résultat construit à la main (tests, appelants)
+            return True
+        return self.solid_words >= 1 and self.confidence >= _MIN_IMAGE_CONFIDENCE
 
 
-EMPTY_RESULT = OcrResult(text="", confidence=0.0)
+EMPTY_RESULT = OcrResult(text="", confidence=0.0, solid_words=0)
 
 
 # ---------------------------------------------------------------------------
 # Disponibilité de Tesseract
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=1)
-def tesseract_cmd() -> str | None:
-    """Chemin du binaire Tesseract, ou ``None`` s'il est introuvable."""
-    if not settings.env_flag("ANON_OCR_ENABLED", True):
-        return None
-    candidates = [
-        os.environ.get("TESSERACT_CMD", ""),
-        shutil.which("tesseract") or "",
-        "/opt/homebrew/bin/tesseract",
-        "/usr/local/bin/tesseract",
-        "/usr/bin/tesseract",
-    ]
+_FALLBACK_PATHS: tuple[str, ...] = (
+    "/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract", "/usr/bin/tesseract",
+)
+
+_RECHECK_SECONDS = 60.0
+"""Délai avant de revérifier un Tesseract absent ou défaillant : installé
+après le démarrage de l'API, il est pris en compte sans redémarrage."""
+
+_detection_lock = threading.RLock()
+_detection: dict[str, tuple] = {}
+"""Résultats de détection : ``clé → (valeur, instant)``. Un résultat positif
+est gardé ; un résultat négatif est revérifié après ``_RECHECK_SECONDS``."""
+
+
+def reset_detection() -> None:
+    """Oublie la détection de Tesseract (tests, changement de configuration)."""
+    with _detection_lock:
+        _detection.clear()
+
+
+def _cached(key: str, compute: Callable[[], object], ok: Callable[[object], bool]):
+    with _detection_lock:
+        entry = _detection.get(key)
+        if entry is not None and (ok(entry[0]) or time.monotonic() - entry[1] < _RECHECK_SECONDS):
+            return entry[0]
+        value = compute()
+        _detection[key] = (value, time.monotonic())
+        return value
+
+
+def _find_binary() -> str | None:
+    candidates = [os.environ.get("TESSERACT_CMD", ""), shutil.which("tesseract") or "",
+                  *_FALLBACK_PATHS]
     for path in candidates:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
 
 
-@lru_cache(maxsize=1)
-def installed_languages() -> frozenset[str]:
-    """Langues Tesseract installées (``tesseract --list-langs``)."""
-    cmd = tesseract_cmd()
-    if not cmd:
-        return frozenset()
+def tesseract_cmd() -> str | None:
+    """Chemin du binaire Tesseract, ou ``None`` s'il est introuvable."""
+    if not settings.env_flag("ANON_OCR_ENABLED", True):
+        return None
+    return _cached("cmd", _find_binary, bool)
+
+
+def _list_languages(cmd: str) -> frozenset[str]:
     try:
         proc = subprocess.run(
             [cmd, "--list-langs"], capture_output=True, timeout=20, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.warning("Tesseract inutilisable : %s", exc)
+        logger.warning("Tesseract inutilisable : %s", type(exc).__name__)
         return frozenset()
     output = (proc.stdout or b"").decode("utf-8", "replace")
-    langs = {
-        line.strip() for line in output.splitlines()[1:] if line.strip()
-    }
-    return frozenset(langs)
+    return frozenset(line.strip() for line in output.splitlines()[1:] if line.strip())
 
 
-@lru_cache(maxsize=1)
+def installed_languages() -> frozenset[str]:
+    """Langues Tesseract installées (``tesseract --list-langs``)."""
+    cmd = tesseract_cmd()
+    if not cmd:
+        return frozenset()
+    return _cached(f"langs:{cmd}", lambda: _list_languages(cmd), bool)
+
+
 def ocr_languages() -> str:
     """Langues effectivement utilisées, au format Tesseract (``fra+eng``)."""
     wanted = os.environ.get("ANON_OCR_LANGS", _DEFAULT_LANGS)
@@ -171,16 +215,27 @@ def ocr_languages() -> str:
         # Repli sur une langue installée quelconque (eng est toujours fourni).
         fallback = [lang for lang in ("fra", "eng") if lang in available]
         langs = fallback or sorted(lang for lang in available if lang != "osd")[:1]
-        if langs:
-            logger.warning(
-                "Langues OCR %r non installées, repli sur %s", wanted, langs,
-            )
     return "+".join(langs)
 
 
+def _self_test(cmd: str) -> bool:
+    """Vérifie une fois que Tesseract produit bien une sortie TSV exploitable
+    (sinon chaque image serait lue « sans texte », en silence)."""
+    try:
+        blank = Image.new("L", (64, 32), 255)
+        _run_tsv(["-l", ocr_languages(), "--psm", "3"], _to_png(blank), cmd=cmd)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tesseract inutilisable (%s) : OCR désactivé", type(exc).__name__)
+        return False
+
+
 def is_available() -> bool:
-    """Vrai si l'OCR est opérationnel (Tesseract + au moins une langue)."""
-    return bool(tesseract_cmd() and ocr_languages())
+    """Vrai si l'OCR est opérationnel (Tesseract, une langue, sortie TSV)."""
+    cmd = tesseract_cmd()
+    if not cmd or not ocr_languages():
+        return False
+    return _cached(f"ok:{cmd}", lambda: _self_test(cmd), bool)
 
 
 def status() -> dict:
@@ -267,8 +322,8 @@ def _to_png(img: Image.Image) -> bytes:
 # Appel de Tesseract
 # ---------------------------------------------------------------------------
 
-def _run(args: list[str], png: bytes) -> str:
-    cmd = tesseract_cmd()
+def _run(args: list[str], png: bytes, cmd: str | None = None) -> str:
+    cmd = cmd or tesseract_cmd()
     if not cmd:
         return ""
     proc = subprocess.run(
@@ -282,11 +337,42 @@ def _run(args: list[str], png: bytes) -> str:
     return (proc.stdout or b"").decode("utf-8", "replace")
 
 
+def _run_tsv(args: list[str], png: bytes, cmd: str | None = None) -> str:
+    """Sortie TSV (mots, positions, confiances) de Tesseract.
+
+    Demandée par paramètre (``tessedit_create_tsv``) et non par le fichier de
+    configuration « tsv », absent de certaines installations : Tesseract
+    renverrait alors du texte brut, lu à tort comme « aucun mot ».
+    """
+    out = _run([*args, "-c", "tessedit_create_tsv=1"], png, cmd=cmd)
+    if not out.startswith("level\t"):
+        raise RuntimeError("Tesseract n'a pas renvoyé de sortie TSV")
+    return out
+
+
+def _is_solid(word: str, conf: float) -> bool:
+    """Mot reconnu avec assurance : au moins 3 caractères alphanumériques et
+    une confiance ≥ 70, ou 2 (« RG », « An ») avec une confiance ≥ 85.
+
+    Le bruit produit sur un dessin (blason, signature, photo) est fait de
+    fragments d'un ou deux signes (« se », « {Al », « # ») ou de mots lus
+    avec une confiance médiocre (« hek » 39, « Mart » 44) : il n'en contient
+    pas, avec Tesseract 4.1 comme 5.x.
+    """
+    alnum = sum(ch.isalnum() for ch in word)
+    return (alnum >= 3 and conf >= 70) or (alnum >= 2 and conf >= 85)
+
+
 def _tsv_to_text(tsv: str) -> OcrResult:
-    """Reconstruit le texte (lignes/paragraphes) depuis la sortie TSV."""
-    lines: dict[tuple[int, int, int], list[str]] = {}
+    """Reconstruit le texte (lignes/paragraphes) depuis la sortie TSV.
+
+    Une ligne n'est gardée que si ses mots sont reconnus avec une confiance
+    suffisante et qu'elle contient au moins un mot « sûr » : les lignes de
+    bruit (dessins, taches, trame d'une photo) disparaissent, même au milieu
+    d'une page lisible.
+    """
+    lines: dict[tuple[int, int, int], list[tuple[str, float]]] = {}
     order: list[tuple[int, int, int]] = []
-    confidences: list[float] = []
 
     for row in tsv.splitlines()[1:]:
         cols = row.split("\t")
@@ -303,24 +389,30 @@ def _tsv_to_text(tsv: str) -> OcrResult:
         if key not in lines:
             lines[key] = []
             order.append(key)
-        lines[key].append(word)
-        confidences.append(conf)
+        lines[key].append((word, conf))
 
     out: list[str] = []
+    kept: list[float] = []
+    solid = 0
     previous_block = None
     for key in order:
-        line = " ".join(lines[key]).strip()
-        # Ligne sans contenu exploitable (bruit graphique) → ignorée.
-        if sum(ch.isalnum() for ch in line) < 2:
-            continue
+        words = lines[key]
+        confidences = [conf for _, conf in words]
+        line = " ".join(word for word, _ in words).strip()
+        line_solid = sum(_is_solid(word, conf) for word, conf in words)
+        if (sum(ch.isalnum() for ch in line) < 2 or not line_solid
+                or sum(confidences) / len(confidences) < _MIN_LINE_CONFIDENCE):
+            continue  # bruit graphique
         if previous_block is not None and key[0] != previous_block:
             out.append("")
         out.append(line)
+        kept.extend(confidences)
+        solid += line_solid
         previous_block = key[0]
 
     text = "\n".join(out).strip()
-    confidence = sum(confidences) / len(confidences) if confidences else 0.0
-    return OcrResult(text=_fix_ocr_digits(text), confidence=confidence)
+    confidence = sum(kept) / len(kept) if kept else 0.0
+    return OcrResult(text=_fix_ocr_digits(text), confidence=confidence, solid_words=solid)
 
 
 _DIGIT_TOKEN_RE = re.compile(r"\b[\dOoIl|]{2,}(?:[./\- ][\dOoIl|]{2,})*\b")
@@ -370,26 +462,26 @@ def ocr_image(img: Image.Image) -> OcrResult:
             return EMPTY_RESULT
         png = _to_png(prepared)
         lang = ocr_languages()
-        result = _tsv_to_text(_run(["-l", lang, "--psm", "3", "tsv"], png))
+        result = _tsv_to_text(_run_tsv(["-l", lang, "--psm", "3"], png))
 
         # Page/scan mal orienté(e) : on redresse et on relit.
         if result.confidence < 70 and min(prepared.size) >= 300:
             angle = _detect_rotation(png)
             if angle:
                 rotated = prepared.rotate(-angle, expand=True, fillcolor=255)
-                retry = _tsv_to_text(_run(["-l", lang, "--psm", "3", "tsv"],
-                                          _to_png(rotated)))
+                retry = _tsv_to_text(_run_tsv(["-l", lang, "--psm", "3"], _to_png(rotated)))
                 if len(retry.text) and retry.confidence > result.confidence:
                     result = retry
 
-        # Texte épars (carte d'identité, schéma, capture…) : mode « sparse ».
+        # Texte épars (carte d'identité, tampon, capture…) : mode « sparse »,
+        # accepté seulement s'il est net (il « lit » volontiers les dessins).
         if not result.has_text:
-            sparse = _tsv_to_text(_run(["-l", lang, "--psm", "11", "tsv"], png))
-            if sparse.has_text:
+            sparse = _tsv_to_text(_run_tsv(["-l", lang, "--psm", "11"], png))
+            if sparse.has_text and sparse.confidence >= _MIN_SPARSE_CONFIDENCE:
                 result = sparse
         return result if result.has_text else EMPTY_RESULT
     except Exception as exc:  # noqa: BLE001 — une image illisible ne bloque pas le document
-        logger.warning("OCR impossible sur une image : %s", exc)
+        logger.warning("OCR impossible sur une image : %s", type(exc).__name__)
         return EMPTY_RESULT
 
 

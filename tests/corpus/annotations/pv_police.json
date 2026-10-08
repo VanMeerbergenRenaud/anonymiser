@@ -1,0 +1,26 @@
+{
+  "document": "pv_police.txt",
+  "description": "Procès-verbal d'audition fictif (texte brut) : champs de formulaire, carte d'identité, plaque, prénom seul.",
+  "mask": {
+    "PERSONNE": ["Marc", "VANDAMME", "BOUZIANE", "Bouziane", "Karim", "Yannick"],
+    "LIEU_NAISSANCE": ["re:1990 à Liège"],
+    "DATE_NAISSANCE": ["17/11/1990"],
+    "NATIONALITÉ": ["marocaine"],
+    "ADRESSE": ["Ernest Solvay 56", "4000 Liège"],
+    "CARTE_IDENTITÉ": ["592-1234567-89"],
+    "TÉLÉPHONE": ["+32 471 23 45 67"],
+    "EMAIL": ["k.bouziane@exemple.com"],
+    "PLAQUE": ["2-XYZ-789"],
+    "RÉFÉRENCE_DOSSIER": ["NA.55.L1.004521/2024"]
+  },
+  "absent_output": ["re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"],
+  "keep": [
+    "ZONE DE POLICE NAMUR CAPITALE", "PROCÈS-VERBAL D'AUDITION", "E411", "Wavre", "2 mai 2024",
+    "3 mai à 14 h 20", "Inspecteur principal"
+  ],
+  "same_label": [
+    ["Marc VANDAMME", "M. VANDAMME"],
+    ["Nom : {BOUZIANE}", "Prénom : {Karim}", "K. Bouziane"]
+  ],
+  "distinct_labels": [["Marc VANDAMME", "K. Bouziane", "Yannick"]]
+}

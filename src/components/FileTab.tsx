@@ -7,7 +7,9 @@ import {
     MAX_FILE_SIZE,
     anonymizeFile,
     type FileProgress,
+    type ReviewTerm,
 } from "@/lib/anonymizeFile";
+import ReviewList from "./ReviewList";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +30,8 @@ interface TrackedFile {
     ocrImages?: number;
     /** Nombre d'images non analysées (OCR indisponible, format, limite). */
     ocrSkipped?: number;
+    /** Mots à relire signalés par le serveur. */
+    review?: ReviewTerm[];
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +148,7 @@ export default function FileTab() {
             aborts.current.set(tracked.id, job.abort);
             try {
                 const result = await job.promise;
-                const blob = new Blob([result.content], { type: "text/plain;charset=utf-8" });
+                const blob = new Blob([result.content], { type: "text/markdown;charset=utf-8" });
                 const url = URL.createObjectURL(blob);
                 objectUrls.current.add(url);
                 update(tracked.id, {
@@ -154,6 +158,7 @@ export default function FileTab() {
                     downloadName: result.filename,
                     ocrImages: result.ocrImages,
                     ocrSkipped: result.ocrSkipped,
+                    review: result.review,
                 });
             } catch (e: unknown) {
                 if (e instanceof AbortedError) return; // fichier retiré de la liste
@@ -273,7 +278,7 @@ export default function FileTab() {
             if (f.status === "done" && f.downloadUrl) {
                 const a = document.createElement("a");
                 a.href = f.downloadUrl;
-                a.download = f.downloadName || "anonymised.txt";
+                a.download = f.downloadName || "anonymise.md";
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -331,7 +336,7 @@ export default function FileTab() {
                             Déposez vos fichiers ici
                         </p>
                         <p className="text-muted text-xs">
-                            PDF, DOCX, TXT, images (max {MAX_FILES} fichiers, {MAX_FILE_MB} Mo chacun)
+                            PDF, DOCX, TXT, images (max {MAX_FILES} fichiers, {MAX_FILE_MB} Mo chacun) · résultat en Markdown (.md)
                         </p>
                         <p className="text-muted text-[11px] mt-1">
                             Le texte présent dans les images est lu automatiquement (OCR)
@@ -376,29 +381,29 @@ export default function FileTab() {
                             return (
                                 <div
                                     key={tf.id}
-                                    className="group flex items-center justify-between border border-border bg-white rounded-lg px-4 py-3 text-sm hover:border-neutral-300 transition-colors"
+                                    className="group flex items-start justify-between border border-border bg-white rounded-lg px-4 py-3 text-sm hover:border-neutral-300 transition-colors"
                                 >
-                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                    <div className="flex items-start gap-3 min-w-0 flex-1">
                                         {/* Indicateur de statut avec SVG minimalistes */}
                                         {tf.status === "processing" && (
-                                            <svg className="shrink-0 w-4 h-4 text-neutral-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <svg className="shrink-0 mt-0.5 w-4 h-4 text-neutral-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
                                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                             </svg>
                                         )}
                                         {tf.status === "done" && (
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-green-600">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 text-green-600">
                                                 <polyline points="20 6 9 17 4 12" />
                                             </svg>
                                         )}
                                         {tf.status === "error" && (
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-red-500">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5 text-red-500">
                                                 <line x1="18" y1="6" x2="6" y2="18" />
                                                 <line x1="6" y1="6" x2="18" y2="18" />
                                             </svg>
                                         )}
                                         {tf.status === "pending" && (
-                                            <div className="shrink-0 w-4 h-4 rounded-full border border-neutral-200" />
+                                            <div className="shrink-0 mt-0.5 w-4 h-4 rounded-full border border-neutral-200" />
                                         )}
 
                                         <div className="flex flex-col min-w-0 flex-1">
@@ -440,6 +445,7 @@ export default function FileTab() {
                                                     />
                                                 </div>
                                             )}
+                                            {tf.status === "done" && tf.review && <ReviewList review={tf.review} />}
                                         </div>
                                     </div>
 

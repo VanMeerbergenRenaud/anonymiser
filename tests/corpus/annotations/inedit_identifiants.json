@@ -1,0 +1,78 @@
+{
+  "document": "inedit_identifiants.txt",
+  "set": "inédit",
+  "description": "Identifiants et références (jeu inédit).",
+  "mask": {
+    "NUMÉRO_RÔLE": [
+      "24/1234/A",
+      "24/567/B",
+      "2023/AB/456",
+      "21/890/C",
+      "8123",
+      "7407",
+      "7409",
+      "7412",
+      "8001",
+      "8002",
+      "7999",
+      "2022/RG/77",
+      "25/456",
+      "22/1234/A"
+    ],
+    "RÉFÉRENCE_DOSSIER": [
+      "LI.12.L3.004567/22",
+      "2024/1234",
+      "DUP/2024/015",
+      "23/0456/MV",
+      "2024/RQ/12"
+    ],
+    "REGISTRE_NATIONAL": [
+      "850312 284 53",
+      "85031228453",
+      "85.03.12-284.53"
+    ],
+    "TÉLÉPHONE": [
+      "+32 (0) 476 12 34 56",
+      "0032 476 123456",
+      "02 / 512 34 56",
+      "071.12.34.56",
+      "04 223 45 68"
+    ],
+    "DATE_NAISSANCE": [
+      "12.03.1985",
+      "12-03-1985",
+      "re:Né le (12 mars 1985)"
+    ],
+    "PASSEPORT": [
+      "EH123456"
+    ],
+    "CARTE_IDENTITÉ": [
+      "591-0123456-78"
+    ],
+    "PLAQUE": [
+      "1-ABC-123",
+      "2-XYZ-987"
+    ],
+    "IBAN": [
+      "BE71 0961 2345 6769",
+      "FR76 3000 6000 0112 3456 7890 189"
+    ],
+    "COMPTE_BANCAIRE": [
+      "001-1234567-89"
+    ]
+  },
+  "keep": [
+    "Arrêt n° 103/2022",
+    "245.123",
+    "Article 1382 du Code civil",
+    "Loi du 8 décembre 1992",
+    "AR du 25 avril 2007",
+    "M.B. 13 mars 2007, p. 12345",
+    "Le 12 mars 1985, le contrat",
+    "Numéros du rôle",
+    "R.R.",
+    "Notre réf.",
+    "Votre référence",
+    "Cour constitutionnelle"
+  ]
+}

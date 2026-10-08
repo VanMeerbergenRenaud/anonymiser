@@ -1,0 +1,13 @@
+{
+  "document": "carte_identite.png",
+  "needs_ocr": true,
+  "description": "Photo fictive de carte d'identité : texte court en champs séparés.",
+  "mask": {
+    "PERSONNE": ["PEETERS", "An Marie"],
+    "CARTE_IDENTITÉ": ["592-1234567-89"],
+    "REGISTRE_NATIONAL": ["85.07.30-033.28"],
+    "DATE_NAISSANCE": ["30 07 1985"]
+  },
+  "keep": ["re:CARTE D.IDENTIT", "N° de carte", "Date de naissance", "Nom / Name"],
+  "present": ["re:592-1234567-89", "re:85\\.07\\.30-033\\.28"]
+}

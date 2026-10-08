@@ -24,17 +24,19 @@ un proxy ou le navigateur. En mode ``stream``, la réponse est un flux NDJSON
 - ``{"event": "progress", "stage": "ocr", "done": 3, "total": 40}`` ;
 - ``{"event": "keepalive"}`` : maintient la connexion pendant un long calcul ;
 - ``{"event": "done", "filename": ..., "content": ..., "ocr_images": ...,
-  "ocr_skipped": ...}`` : résultat ;
+  "ocr_skipped": ..., "review": [...]}`` : résultat (texte Markdown) et mots
+  à relire ;
 - ``{"event": "error", "status": 400, "error": "..."}`` : échec.
 
 Si le navigateur se déconnecte, le traitement est annulé (voir
 ``api.progress``). Sans ``stream``, l'endpoint renvoie directement le
-fichier ``.txt`` (usage scripts / API).
+fichier ``.md`` (usage scripts / API).
 
 Confidentialité
 ---------------
 Les messages d'erreur renvoyés ne contiennent jamais de détail interne
-(exceptions Python), qui pourrait inclure un extrait du document.
+(exceptions Python), qui pourrait inclure un extrait du document ; les
+journaux n'en conservent que le type et l'emplacement (fichier, ligne).
 """
 
 from __future__ import annotations
@@ -44,8 +46,10 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
+import traceback
 import unicodedata
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
@@ -57,7 +61,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 import api.anonymize_file as file_module
 import api.anonymize_text as text_module
 from api import ocr, settings
-from api.nlp_engine import TextTooLongError, select_backend
+from api.nlp_engine import NER_MODEL, TextTooLongError
 from api.progress import Cancelled
 
 # ---------------------------------------------------------------------------
@@ -98,6 +102,19 @@ _JOB_SLOTS = threading.BoundedSemaphore(settings.MAX_PARALLEL_JOBS)
 
 def _error(message: str, status: int) -> tuple[Response, int]:
     return jsonify({"error": message}), status
+
+
+def _log_internal_error(context: str) -> None:
+    """Journalise l'erreur en cours sans son message.
+
+    Le message d'une exception peut contenir un extrait du document
+    (« impossible de traiter « Jean DUPONT » ») : seuls le type d'erreur et
+    les fichiers / lignes en cause sont écrits, ce qui suffit au diagnostic.
+    """
+    exc_type, _exc, tb = sys.exc_info()
+    frames = traceback.extract_tb(tb)[-6:]
+    where = " < ".join(f"{os.path.basename(f.filename)}:{f.lineno} ({f.name})" for f in reversed(frames))
+    logger.error("%s : %s [%s]", context, getattr(exc_type, "__name__", "Exception"), where)
 
 
 @contextmanager
@@ -151,15 +168,17 @@ def anonymize_text():
     """Anonymise un texte brut envoyé au format JSON.
 
     Attend un corps JSON ``{"text": "..."}`` et retourne
-    ``{"anonymized": "..."}``.
+    ``{"anonymized": "...", "review": [{"term", "count", "reason"}, ...]}``
+    (mots à relire, voir ``api.review``).
     """
     text = _read_text(_json_body())
     if not isinstance(text, str):
         return text
     try:
-        return jsonify({"anonymized": text_module.anonymize_text(text)})
+        anonymized, review = text_module.anonymize_with_review(text)
+        return jsonify({"anonymized": anonymized, "review": review})
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors de l'anonymisation d'un texte")
+        _log_internal_error("Erreur lors de l'anonymisation d'un texte")
         return _error("Erreur interne lors de l'anonymisation.", 500)
 
 
@@ -181,7 +200,7 @@ def analyze_text_detailed():
         )
         return jsonify(result)
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors de l'analyse d'un texte")
+        _log_internal_error("Erreur lors de l'analyse d'un texte")
         return _error("Erreur interne lors de l'analyse.", 500)
 
 
@@ -190,23 +209,23 @@ def analyze_text_detailed():
 # ---------------------------------------------------------------------------
 
 def _output_filename(filename: str) -> str:
-    """« C:\\dossier\\Jugement 2024.pdf » → « a-Jugement 2024.txt »."""
+    """« C:\\dossier\\Jugement 2024.pdf » → « a-Jugement 2024.md »."""
     base = filename.replace("\\", "/").rsplit("/", 1)[-1]
     stem = os.path.splitext(base)[0]
     stem = re.sub(r"[\x00-\x1f\x7f\"*:<>?|]", "_", stem).strip(" .") or "document"
-    return f"a-{stem[:150]}.txt"
+    return f"a-{stem[:150]}.md"
 
 
 def _ascii_filename(filename: str) -> str:
     """Nom de repli ASCII pour ``Content-Disposition`` (anciens clients)."""
     ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
-    return re.sub(r"[^A-Za-z0-9._ -]", "_", ascii_name) or "anonymise.txt"
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", ascii_name) or "anonymise.md"
 
 
 def _file_response(result: file_module.ProcessedFile, output_name: str) -> Response:
     return Response(
         result.content,
-        mimetype="text/plain; charset=utf-8",
+        mimetype="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": (
                 f'attachment; filename="{_ascii_filename(output_name)}"; '
@@ -215,6 +234,7 @@ def _file_response(result: file_module.ProcessedFile, output_name: str) -> Respo
             "X-Filename": quote(output_name),
             "X-Ocr-Images": str(result.ocr_images),
             "X-Ocr-Skipped": str(result.skipped_images),
+            "X-Review-Count": str(len(result.review)),
             "Cache-Control": "no-store",
         },
     )
@@ -261,13 +281,14 @@ def _stream_job(filename: str, content: bytes, output_name: str) -> Response:
                 "ocr_images": result.ocr_images,
                 "ocr_skipped": result.skipped_images,
                 "content": result.content.decode("utf-8"),
+                "review": result.review,
             })
         except Cancelled:
             logger.info("Traitement annulé (client déconnecté)")
         except file_module.FileProcessingError as exc:
             events.put({"event": "error", "status": exc.status, "error": str(exc)})
         except Exception:  # noqa: BLE001
-            logger.exception("Erreur lors du traitement d'un fichier")
+            _log_internal_error("Erreur lors du traitement d'un fichier")
             events.put({"event": "error", "status": 500,
                         "error": "Erreur interne lors du traitement du fichier."})
         finally:
@@ -313,7 +334,7 @@ def anonymize_file():
     """Anonymise un fichier uploadé via multipart/form-data.
 
     Attend un champ ``file`` contenant le document (PDF, DOCX, TXT ou image).
-    Retourne toujours un texte ``.txt`` anonymisé (UTF-8) : directement, ou
+    Retourne toujours un texte ``.md`` anonymisé (UTF-8) : directement, ou
     dans l'événement ``done`` du flux NDJSON avec ``?stream=1``. Les
     en-têtes ``X-Ocr-Images`` / ``X-Ocr-Skipped`` (mode direct) indiquent le
     nombre d'images lues par OCR / non analysées.
@@ -339,7 +360,7 @@ def anonymize_file():
     except file_module.FileProcessingError as exc:
         return _error(str(exc), exc.status)
     except Exception:  # noqa: BLE001
-        logger.exception("Erreur lors du traitement d'un fichier")
+        _log_internal_error("Erreur lors du traitement d'un fichier")
         return _error("Erreur interne lors du traitement du fichier.", 500)
     return _file_response(result, output_name)
 
@@ -353,7 +374,7 @@ def health():
     """État du backend : moteur NER actif, OCR et limites."""
     return jsonify({
         "status": "ok",
-        "nlp_backend": select_backend(),
+        "ner_model": NER_MODEL,
         "ocr": ocr.status(),
         "formats": list(file_module.SUPPORTED_EXTENSIONS),
         "limits": {

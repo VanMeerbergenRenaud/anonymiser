@@ -1,0 +1,197 @@
+{
+  "document": "arret_cc_2024_001.pdf",
+  "description": "Cour constitutionnelle, arrêt n° 1/2024 du 11 janvier 2024 (document public, 24 pages) : https://fr.const-court.be/public/f/2024/2024-001f.pdf",
+  "mask": {
+    "PERSONNE": [
+      "Nihoul",
+      "Lavrysen",
+      "Giet",
+      "Moerman",
+      "Pâques",
+      "Kherbache",
+      "Pieters",
+      "Bethune",
+      "Bribosia",
+      "Jadin",
+      "Dupont",
+      "Malherbe",
+      "Scarnà",
+      "Wouters",
+      "Judo",
+      "Alex",
+      "Tallon",
+      "Frédéric",
+      "Delrue",
+      "Mirjam",
+      "Vermaut",
+      "Bart",
+      "Coile",
+      "Vincent",
+      "Delvaux",
+      "Noël",
+      "Hordies",
+      "Foestraets",
+      "Plaen",
+      "Roland",
+      "P.V.",
+      "G.G."
+    ],
+    "NUMÉRO_RÔLE": [
+      "7407",
+      "7409",
+      "7410",
+      "7412"
+    ]
+  },
+  "absent_output": [
+    "re:(?<![\\w.])[A-Z]\\.(?:-[A-Z]\\.)? ?\\[PERSONNE"
+  ],
+  "keep": [
+    "Cour constitutionnelle",
+    "Arrêt n° 1/2024",
+    "Numéros du rôle",
+    "ECLI:BE:GHCC:2024:ARR.001",
+    "ECLI:BE:GHCC:2020:ARR.168",
+    "ECLI:BE:GHCC:2022:ARR.103",
+    "arrêt n° 103/2022",
+    "Directive (UE) 2018/822",
+    "Union européenne",
+    "re:l’Union\\b",
+    "États membres",
+    "Autorité de protection des données",
+    "Orde van Vlaamse balies",
+    "Orde van Vlaamse Balies",
+    "Ordre des barreaux francophones et germanophone",
+    "Conseil des ministres",
+    "SPF Finances",
+    "Belgian Association of Tax Lawyers",
+    "Institut des Conseillers fiscaux et des Experts-comptables",
+    "Institut professionnel des comptables et fiscalistes agréés",
+    "Conseil national des barreaux de France",
+    "Michaud c. France",
+    "Altay c. Turquie",
+    "Consob",
+    "Privacy International",
+    "Ligue des droits humains",
+    "Luxembourg Business Registers et Sovim",
+    "AM & S Europe/Commission",
+    "Pologne/Parlement et Conseil",
+    "État luxembourgeois",
+    "signée à Rome",
+    "barreau de Bruxelles",
+    "Cour de cassation",
+    "Moniteur belge",
+    "B.64",
+    "B.87",
+    "C-694/20",
+    "ECLI:EU:C:2022:963",
+    "CE:ECHR:2012:1206JUD001232311",
+    "Code pénal",
+    "Cour de justice",
+    "Cour EDH",
+    "CEDH",
+    "Conseil d’État",
+    "Partant",
+    "Doc. parl."
+  ],
+  "same_label": [
+    [
+      "P. Nihoul"
+    ],
+    [
+      "K. Jadin"
+    ],
+    [
+      "J. Moerman"
+    ],
+    [
+      "P. Malherbe"
+    ],
+    [
+      "S. Scarnà"
+    ],
+    [
+      "P. Wouters"
+    ],
+    [
+      "F. Judo"
+    ],
+    [
+      "F. Roland"
+    ],
+    [
+      "N. Dupont"
+    ],
+    [
+      "Alex Tallon"
+    ]
+  ],
+  "distinct_labels": [
+    [
+      "N. Dupont",
+      "P. Nihoul",
+      "L. Lavrysen",
+      "T. Giet",
+      "J. Moerman",
+      "M. Pâques",
+      "Y. Kherbache",
+      "D. Pieters",
+      "S. de Bethune",
+      "E. Bribosia",
+      "K. Jadin"
+    ],
+    [
+      "P. Malherbe",
+      "S. Scarnà",
+      "P. Wouters",
+      "F. Judo",
+      "J. Noël",
+      "J.-P. Hordies",
+      "G. de Foestraets",
+      "E. De Plaen",
+      "F. Roland",
+      "Alex Tallon",
+      "Frédéric Delrue",
+      "Mirjam Vermaut",
+      "Bart Van Coile",
+      "Vincent Delvaux"
+    ],
+    [
+      "P.V.",
+      "G.G."
+    ]
+  ],
+  "present": [
+    "avocat-intermédiaire",
+    "avocats-intermédiaires",
+    "eux-mêmes",
+    "2019-2020",
+    "(C-694/20,",
+    "re:\\nI\\.\\s+Objet des recours et procédure\\n",
+    "re:\\na\\.\\s+Par requête adressée à la Cour",
+    "re:\\nII\\.\\s+En droit\\n",
+    "re:\\n- A -\\n",
+    "re:Quant aux mémoires complémentaires déposés à la suite de l’ordonnance de la Cour du 17 mai 2023\\n",
+    "re:\\nA\\.1\\.\\s+Par son arrêt interlocutoire",
+    "re:\\(ci-après : la directive 2011/16/UE\\)",
+    "re:du Code des droits et taxes divers, à l’avocat-intermédiaire de notifier",
+    "re:Le greffier,(?:\\t+| {2,})Le président,|Le greffier,\\n+Le président,",
+    "re:N\\. Dupont(?:\\t+| {2,})P\\. Nihoul|N\\. Dupont\\n+P\\. Nihoul"
+  ],
+  "absent": [
+    "avocatintermédiaire",
+    "avocatsintermédiaires",
+    "euxmêmes",
+    "2019- 2020",
+    "re:procédure a\\.",
+    "re:ARR\\.001 \\d",
+    "re:--- Texte extrait d'une image",
+    "re:\\(C-\\s+694/20"
+  ],
+  "ignore_lines": [
+    "re:^\\d{1,2}$"
+  ],
+  "repeated_lines": [
+    "re:^ECLI:BE:GHCC:2024:ARR\\.001$"
+  ]
+}

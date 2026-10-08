@@ -21,12 +21,20 @@ export type FileProgress =
     | { kind: "queued" }
     | { kind: "stage"; stage: Stage; done: number; total: number };
 
-/** Résultat d'un traitement réussi. */
+/** Mot à relire signalé par le serveur (voir `api/review.py`). */
+export interface ReviewTerm {
+    term: string;
+    count: number;
+    reason: string;
+}
+
+/** Résultat d'un traitement réussi (texte Markdown). */
 export interface AnonymizedFile {
     filename: string;
     content: string;
     ocrImages: number;
     ocrSkipped: number;
+    review: ReviewTerm[];
 }
 
 /** Traitement en cours : promesse du résultat et fonction d'annulation. */
@@ -52,6 +60,7 @@ type ServerEvent =
           content: string;
           ocr_images: number;
           ocr_skipped: number;
+          review?: ReviewTerm[];
       }
     | { event: "error"; status: number; error: string };
 
@@ -112,6 +121,7 @@ export function anonymizeFile(file: File, onProgress: (progress: FileProgress) =
                         content: event.content,
                         ocrImages: event.ocr_images,
                         ocrSkipped: event.ocr_skipped,
+                        review: event.review ?? [],
                     });
                     break;
                 case "error":
