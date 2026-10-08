@@ -314,16 +314,17 @@ _SWALLOW_OK = {
 « Dupont & Fils »)."""
 
 
-def swallowed_words(text: str, detections) -> list[str]:
+def swallowed_words(text: str, detections, names: Iterable[str] = ()) -> list[str]:
     """Mots en minuscules masqués comme partie d'un nom de personne ou d'un
-    nom propre : un mot courant ainsi avalé est perdu pour le lecteur
+    nom propre (hors ``names`` : noms annotés écrits en minuscules) : un mot courant ainsi avalé est perdu pour le lecteur
     (« Maître [PERSONNE_4] » au lieu de « Maître X loco Maître Y »)."""
+    allowed = _SWALLOW_OK | {w.lower() for value in names for w in re.findall(r"[^\W\d_]+", value)}
     found = []
     for d in detections:
         if d.entity not in _NAME_TYPES:
             continue
         for word in re.findall(r"[^\W\d_]+", text[d.start:d.end]):
-            if word.islower() and word not in _SWALLOW_OK:
+            if word.islower() and word not in allowed:
                 found.append(word)
     return found
 
@@ -392,7 +393,8 @@ def evaluate_document(annotation: dict, check_determinism: bool = True) -> Docum
                         result.label_errors.append(
                             f"personnes distinctes : {group[i]!r} et {group[j]!r} → {sorted(common)}")
 
-    result.swallowed = swallowed_words(extracted, detections)
+    result.swallowed = swallowed_words(
+        extracted, detections, annotation.get("mask", {}).get("PERSONNE", []))
 
     # Fidélité
     for value in annotation.get("present", []):

@@ -75,6 +75,7 @@ import warnings
 from dataclasses import replace
 from typing import Optional
 
+from spacy.lang.fr.stop_words import STOP_WORDS as _FRENCH_STOP_WORDS
 from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngine, NlpEngineProvider
 from presidio_analyzer.predefined_recognizers import (
@@ -141,9 +142,11 @@ ENTITY_LABELS: dict[str, str] = {
     "IP_ADDRESS": "ADRESSE_IP",
     "URL": "URL",
     "BIRTH_DATE": "DATE_NAISSANCE",
+    "BIRTH_PLACE": "LIEU",
     "FR_DATE_NAISSANCE": "DATE_NAISSANCE",
     "FR_NUM_ROLE": "NUMÉRO_RÔLE",
     "CASE_REFERENCE": "RÉFÉRENCE_DOSSIER",
+    "STAFF_NUMBER": "MATRICULE",
     "FR_NOM_PROPRE": "Nom propre",
     "FR_TVA": "TVA",
     "FR_SIRET": "SIRET",
@@ -160,9 +163,9 @@ ENTITIES_TO_SKIP: set[str] = {"DATE_TIME"}
 _PRIORITY: dict[str, int] = {
     "BE_NATIONAL_NUMBER": 100, "FR_NIR": 95, "IBAN_CODE": 90, "CREDIT_CARD": 90,
     "BANK_ACCOUNT": 85, "BE_ID_CARD": 85, "PASSPORT": 85, "EMAIL_ADDRESS": 80,
-    "BIRTH_DATE": 75, "PHONE_NUMBER": 70, "ADDRESS": 60, "PERSON": 55,
+    "BIRTH_DATE": 75, "BIRTH_PLACE": 72, "PHONE_NUMBER": 70, "ADDRESS": 60, "PERSON": 55,
     "LICENSE_PLATE": 50, "VAT_NUMBER": 50, "BE_ENTERPRISE": 50, "FR_SIRET": 45,
-    "FR_NUM_ROLE": 45, "CASE_REFERENCE": 42, "FR_SIREN": 40, "URL": 40,
+    "FR_NUM_ROLE": 45, "CASE_REFERENCE": 42, "STAFF_NUMBER": 42, "FR_SIREN": 40, "URL": 40,
     "IP_ADDRESS": 40, "LOCATION": 30, "ORGANIZATION": 25, "FR_NOM_PROPRE": 20,
     "NRP": 15, "FR_POSTAL_CODE": 10, "CASE_NAME": 35, "CUSTOM": 5,
 }
@@ -323,8 +326,6 @@ def _build_analyzer() -> AnalyzerEngine:
     registry.add_recognizer(CreditCardRecognizer(supported_language="fr"))
     registry.add_recognizer(UrlRecognizer(supported_language="fr"))
     registry.add_recognizer(IpRecognizer(supported_language="fr"))
-    for recognizer in build_recognizers("fr"):
-        registry.add_recognizer(recognizer)
 
     return AnalyzerEngine(
         nlp_engine=nlp_engine,
@@ -338,7 +339,15 @@ def _build_analyzer() -> AnalyzerEngine:
 # ---------------------------------------------------------------------------
 
 analyzer: AnalyzerEngine = _build_analyzer()
-"""Instance partagée de l'analyseur Presidio."""
+"""Instance partagée de l'analyseur Presidio (NER + carte bancaire, URL, IP)."""
+
+_rule_recognizers = build_recognizers("fr")
+"""Règles belges / françaises (``api.recognizers``), exécutées hors de
+Presidio : celui-ci réduit à une seule les détections de même position et de
+même type, et une règle (validée par son contexte : « Lieu de naissance : »,
+« Mme sophie lemaire ») pouvait alors être remplacée par la détection du
+NER, soumise à ses propres filtres. Les règles, de simples expressions
+régulières, n'ont pas besoin du verrou de calcul."""
 
 
 def known_word(word: str) -> bool:
@@ -423,6 +432,23 @@ _HEADING_WORDS: frozenset[str] = frozenset({
 """Mots signalant un intitulé (« PAR CES MOTIFS ») et non un nom propre."""
 
 _HEADING_PARTICLES = frozenset({"DE", "DU", "DES", "LA", "LE", "L", "D"})
+
+_COMMON_FRENCH_WORDS: frozenset[str] = frozenset(
+    fold(w).strip("'’") for w in _FRENCH_STOP_WORDS if len(w.strip("'’")) >= 3
+) - NAME_PARTICLES - {"BAS", "BAT", "HUE", "HEM", "HEP", "HOU", "HUI", "NUL", "TEL"} | {
+    # Nombres écrits en toutes lettres (actes notariés : « L'AN DEUX MILLE … »).
+    "AN", "ANNEE", "UN", "UNE", "DEUX", "TROIS", "QUATRE", "CINQ", "SIX", "SEPT", "HUIT", "NEUF",
+    "DIX", "ONZE", "DOUZE", "TREIZE", "QUATORZE", "QUINZE", "SEIZE", "VINGT", "TRENTE",
+    "QUARANTE", "CINQUANTE", "SOIXANTE", "CENT", "CENTS", "MILLE",
+    # Formules notariales et d'actes.
+    "COMPARU", "COMPARUS", "COMPARANT", "COMPARANTS", "COMPARANTE", "COMPARANTES", "REQUIS",
+    "EXPEDITION", "CONFORME", "DEVANT", "NOUS", "LESQUELS", "LESQUELLES", "LEQUEL", "LAQUELLE",
+    "ACTE", "DONT", "DECLARENT", "DECLARE", "ONT", "SIGNE", "SIGNENT", "APRES", "LECTURE",
+}
+"""Mots courants du français (mots grammaticaux de spaCy, nombres, formules
+d'actes) en capitales : ils signalent une formule ou un intitulé, pas un nom
+(« ONT COMPARU », « L'AN DEUX MILLE VINGT-QUATRE », « Par-devant Nous »).
+Les particules de noms (« LE GALL », « DE SMET ») n'en font pas partie."""
 
 _COMMON_WORDS: frozenset[str] = frozenset({
     "PARTANT", "AINSI", "TOUTEFOIS", "CEPENDANT", "ENFIN", "ENSUITE", "OR", "DONC", "NEANMOINS",
@@ -538,10 +564,10 @@ def _is_heading(sequence: str) -> bool:
         return False
     parts: list[str] = []
     for word in _words(sequence):
-        parts.extend(p for p in re.split(r"['’]", word) if p)
+        parts.extend(p for p in re.split(r"['’-]", word) if p)
     if not parts:
         return False
-    if any(p in _HEADING_WORDS for p in parts):
+    if any(p in _HEADING_WORDS or p in _COMMON_FRENCH_WORDS for p in parts):
         return True
     if sum(p in _HEADING_PARTICLES for p in parts) >= 2:
         return True
@@ -604,6 +630,9 @@ def _raw_detections(text: str, progress: Optional[ProgressCallback] = None) -> l
                 results = analyzer.analyze(
                     text=chunk, language="fr", score_threshold=_MIN_THRESHOLD,
                 )
+            for recognizer in _rule_recognizers:
+                results.extend(r for r in recognizer.analyze(chunk, [])
+                               if r.score >= _MIN_THRESHOLD)
             detections.extend(
                 Detection(
                     r.start + offset, r.end + offset, r.entity_type, float(r.score),
@@ -735,6 +764,9 @@ def _clean(text: str, detections: list[Detection], public_refs: _SpanIndex) -> l
             words = _words(value)
             if not words or all(w in _COMMON_WORDS for w in words):
                 continue
+            if all(p in _COMMON_FRENCH_WORDS or p in _HEADING_PARTICLES
+                   for w in words for p in re.split(r"['’-]", w) if p):
+                continue  # « Par-devant Nous » : pronom, pas une personne
             if (d.entity == "PERSON" and " " not in value and public.place_context(text, d.start)
                     and not is_first_name(value)):
                 d.entity = "LOCATION"  # « dont le siège est établi à Bouge »
@@ -766,7 +798,7 @@ def _clean(text: str, detections: list[Detection], public_refs: _SpanIndex) -> l
 
 _EPONYM_BEFORE_RE = re.compile(
     r"(?i)(?<![\w])(?:m[ée]thode|formule|tables?|bar[èe]me|th[ée]orie|doctrine|jurisprudence|"
-    r"loi|lois|r[èe]gle|principe|crit[èe]res?|test)[ \t]+(?:de[ \t]+|d['’])?$"
+    r"loi|lois|r[èe]gle|principe|crit[èe]res?|test)[ \t]+(?:de[ \t]+|d['’])?\Z"
 )
 """Nom propre désignant une méthode, une loi ou une théorie (« méthode
 Renard », « loi Major ») : référence publique, pas une personne du dossier."""
@@ -869,14 +901,14 @@ _IDENTIFIER_TYPES: frozenset[str] = frozenset({
     "BE_NATIONAL_NUMBER", "FR_NIR", "IBAN_CODE", "CREDIT_CARD", "BANK_ACCOUNT",
     "BE_ID_CARD", "PASSPORT", "EMAIL_ADDRESS", "PHONE_NUMBER", "FR_NUM_ROLE",
     "CASE_REFERENCE", "VAT_NUMBER", "BE_ENTERPRISE", "FR_SIRET", "FR_SIREN",
-    "LICENSE_PLATE", "URL", "IP_ADDRESS", "BIRTH_DATE",
+    "LICENSE_PLATE", "URL", "IP_ADDRESS", "BIRTH_DATE", "BIRTH_PLACE", "STAFF_NUMBER",
 })
 """Identifiants trouvés par des règles (format et position exacts)."""
 
 _ID_MENTIONS: frozenset[str] = frozenset({
     "RG", "FA", "RN", "NN", "NISS", "INSZ", "RRN", "REP", "N", "NO", "NR", "NUMERO",
     "NUMEROS", "TEL", "GSM", "FAX", "IBAN", "BIC", "TVA", "BTW", "BCE", "KBO",
-    "PV", "NOTICE", "PORTALIS",
+    "PV", "NOTICE", "PORTALIS", "MATRICULE",
 })
 """Mentions qui annoncent un identifiant (« R.G. n° », « RN », « GSM »)."""
 
@@ -947,7 +979,7 @@ def _detach_identifiers(text: str, detections: list[Detection]) -> list[Detectio
 # ---------------------------------------------------------------------------
 
 _PROPAGATED_IDENTIFIERS: frozenset[str] = frozenset({
-    "FR_NUM_ROLE", "CASE_REFERENCE", "BE_NATIONAL_NUMBER", "FR_NIR", "BE_ID_CARD",
+    "FR_NUM_ROLE", "CASE_REFERENCE", "STAFF_NUMBER", "BE_NATIONAL_NUMBER", "FR_NIR", "BE_ID_CARD",
     "PASSPORT", "IBAN_CODE", "BANK_ACCOUNT", "PHONE_NUMBER", "EMAIL_ADDRESS",
     "LICENSE_PLATE", "VAT_NUMBER", "BE_ENTERPRISE",
 })
@@ -1098,7 +1130,7 @@ def _merge_overlaps(detections: list[Detection]) -> list[Detection]:
     return merged
 
 
-_ADDRESS_PARTS = {"ADDRESS", "LOCATION", "FR_POSTAL_CODE"}
+_ADDRESS_PARTS = {"ADDRESS", "LOCATION", "FR_POSTAL_CODE", "BIRTH_PLACE"}
 _HOUSE_NUMBER_TAIL_RE = re.compile(
     r"[ \t]*,?[ \t]*(?:n°[ \t]*)?\d{1,4}[A-Za-z]?(?![\d\w])"
     r"(?:[ \t]*,?[ \t]*(?i:bte|bo[îi]te|bus|b)\.?[ \t]*[A-Za-z]?\d{1,4})?"

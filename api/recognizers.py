@@ -36,7 +36,9 @@ from typing import Callable, Optional
 
 from presidio_analyzer import EntityRecognizer, RecognizerResult
 
-from api.first_names import AMBIGUOUS_FIRST_NAMES, is_first_name
+from spacy.lang.fr.stop_words import STOP_WORDS as _FRENCH_STOP_WORDS
+
+from api.first_names import AMBIGUOUS_FIRST_NAMES, FIRST_NAMES, is_first_name
 
 # ---------------------------------------------------------------------------
 # Briques de base des expressions régulières
@@ -110,6 +112,8 @@ ROLE_WORDS: frozenset[str] = frozenset({
     "SALARIE", "SALARIEE", "EMPLOYEUR", "TRAVAILLEUR", "BOURGMESTRE",
     "ECHEVIN", "ECHEVINE", "MAIRE", "GOUVERNEUR", "ROI", "REINE",
     "COMMISSAIRE", "INSPECTEUR", "INSPECTRICE", "AGENT", "OFFICIER",
+    "PRINCIPAL", "PRINCIPALE", "CHEF", "DIVISIONNAIRE", "INP", "INPP", "BRIGADIER",
+    "ASPIRANT", "ASPIRANTE", "OPJ", "APJ", "QUARTIER",
     "CONFRERE", "CONSOEUR", "MEDECIN", "INFIRMIER", "INFIRMIERE", "JUSTICE",
     "MAGISTRAT", "TUTEUR", "TUTRICE", "ADMINISTRATEUR", "MANDATAIRE",
     "REPRESENTANT", "REPRESENTANTE", "COLLEGUE", "DOYEN", "RECTEUR",
@@ -145,6 +149,8 @@ NAME_PARTICLES: frozenset[str] = frozenset({
     "DE", "DU", "DES", "LA", "LE", "VAN", "VON", "DER", "DEN", "TER", "TEN",
     "VANDEN", "VANDER", "VANDE", "DI", "DA", "DEL", "DELLA", "DOS", "DAS",
     "ZU", "OP", "HET", "D'", "D’",
+    # Particules arabes et berbères : « EL AMRANI », « Aït Ahmed », « Ould Taleb ».
+    "EL", "AL", "AIT", "ABOU", "ABU", "OULD", "IBN",
 })
 
 
@@ -466,7 +472,7 @@ _PHONE_AREA_CODE_RE = re.compile(
 )
 _PHONE_INTL_RE = re.compile(
     r"(?<![\w+])(?:\+|00)[1-9]\d{0,2}[ \t]?(?:\(0\)[ \t]?)?"
-    rf"\d{{1,4}}(?:{_PHONE_SEP}\d{{1,4}}(?!\d)){{1,5}}(?![\d])"
+    rf"\d{{1,4}}(?:{_PHONE_SEP}\d{{1,6}}(?!\d)){{1,5}}(?![\d])"
 )
 _PHONE_INTL_COMPACT_RE = re.compile(
     # « +32471234567 », « 0033612345678 » (sans séparateur). Avec « 00 »,
@@ -518,13 +524,13 @@ _ROLE_LIST = (
 )
 """Liste de numéros de rôle : « 7407, 7409, 7410 et 7412 », « 19/1111/A et 19/2222/A »."""
 
-_ROLE_MENTION = r"(?<![\w.])(?:R\.[ \t]?G\.?|RG|F\.[ \t]?A\.?|FA)(?![\w])"
+_ROLE_MENTION = r"(?<![\w.])(?:R\.[ \t]?G\.?|RG|F\.[ \t]?A\.?|FA|R\.[ \t]?R\.)(?![\w])"
 _ROLE_LABEL = (
     rf"{_ROLE_MENTION}"
     r"|(?<![\w])(?i:(?:num[ée]ros?|n[°ºo˚]s?|nrs?)\.?[ \t]+(?:(?:de|du|des)[ \t]+)?r[ôo]les?(?:[ \t]+g[ée]n[ée]ral)?"
     r"|r[ôo]le[ \t]+g[ée]n[ée]ral|r[ôo]le(?=[ \t]+n[°ºo˚])|rolnummers?|algemene[ \t]+rol"
     r"|inscrite?s?[ \t]+au[ \t]+r[ôo]le(?:[ \t]+g[ée]n[ée]ral)?[ \t]+sous[ \t]+(?:le|les)"
-    r"|affaires?(?=[ \t]+(?:n[°ºo˚]s?|nos?|num[ée]ros?)\.?[ \t]*\d))(?![\w])"
+    r"|affaires?(?:[ \t]+jointes)?(?=[ \t]+(?:n[°ºo˚]s?|nos?|num[ée]ros?)\.?[ \t]*\d))(?![\w])"
 )
 """Mentions annonçant un numéro de rôle (« RG », « Numéros du rôle », « inscrite
 au rôle général sous le n° », « l'affaire n° 7407 »)."""
@@ -552,6 +558,11 @@ _CASE_REF_LABEL = (
     r"(?<![\w])(?:R[ée]p\.|(?i:r[ée]pertoire)(?:[ \t]+(?i:g[ée]n[ée]ral))?"
     r"|(?i:notice(?:[ \t]+(?:du[ \t]+)?parquet)?|not\.[ \t]*parq\.?|n[°ºo˚][ \t]*(?:de[ \t]+)?notice)"
     r"|PV|P\.V\.|(?i:proc[èe]s[- ]verbal))(?![\w])"
+    # Références de correspondance et de greffe : « Notre réf. », « V/Réf. »,
+    # « Réf. greffe », « Requête n° ».
+    r"|(?<![\w])(?:(?i:notre|votre|nos|vos)[ \t]+|[NnVv][ \t]*/[ \t]*)?(?i:r[ée]f(?:[ée]rences?)?)\.?"
+    r"(?:[ \t]+(?i:du[ \t]+greffe|greffe|dossier|interne|client|cabinet))?(?![\w])"
+    r"|(?<![\w])(?i:requ[êe]te)(?=[ \t]+(?i:n[°ºo˚]))"
 )
 _CASE_REF_RE = re.compile(rf"(?:{_CASE_REF_LABEL}){_REF_GLUE}(?P<num>{_REF_LIST})")
 _PORTALIS_RE = re.compile(
@@ -736,6 +747,11 @@ _TITLES = (
     r"|[Jj]uge|[Nn]otaire|[Hh]uissier(?:[ \t]+de[ \t]+justice)?|[Gg]reffi(?:er|ère)|[Aa]vocate?|[Cc]onfrère|[Cc]onsœur"
     r"|[Bb]âtonnier|[Ee]xperte?|[Mm]édecin|[Ii]nfirmi(?:er|ère)|[Tt]émoin|[Cc]ollègue|[Pp]atiente?"
     r"|[Ee]nfants?|[Ff]ils|[Ff]ille|[Pp]ère|[Mm]ère|[Ff]rère|[Ss]œur|[Cc]onjointe?|[Cc]ompagne?|[Ee]x-[ée]pou(?:se|x)"
+    # Grades de police (l'agent verbalisant est une personne à masquer).
+    r"|INPP?|OPJ|APJ|[Ii]nspect(?:eur|rice)(?:[ \t]+(?:[Pp]rincipale?|[Ee]n[ \t]+[Cc]hef|[Dd]ivisionnaire))?"
+    r"|[Pp]remi(?:er|ère)[ \t]+[Ii]nspect(?:eur|rice)(?:[ \t]+[Pp]rincipale?)?"
+    r"|[Cc]ommissaire(?:[ \t]+(?:[Dd]ivisionnaire|[Ee]n[ \t]+[Cc]hef|de[ \t]+police))?"
+    r"|[Aa]gent(?:[ \t]+de[ \t]+(?:quartier|police))?|[Bb]rigadier(?:-chef)?|[Aa]spirante?"
 )
 _TITLED_PERSON_RE = re.compile(
     rf"(?<![\w-])(?:{_TITLES})(?:[ \t]*,)?[ \t]+(?P<name>{PERSON_NAME})"
@@ -747,7 +763,7 @@ _SOUSSIGNE_RE = re.compile(
 
 
 TITLE_BEFORE_RE = re.compile(
-    r"(?:Monsieur|Madame|Mademoiselle|Ma[îi]tre|Docteur|Mme|Mlle|Me|Dr|Mr|M)\.?[ \t]*$"
+    r"(?:Monsieur|Madame|Mademoiselle|Ma[îi]tre|Docteur|Mme|Mlle|Me|Dr|Mr|M)\.?[ \t]*\Z"
 )
 """Civilité juste avant un nom (« Mme » + « M. LEJEUNE »)."""
 
@@ -802,7 +818,7 @@ _NOT_A_NAME_BEFORE_RE = re.compile(
     r"(?i)(?<![\w])(?:saint|sainte|st|ste|rue|avenue|av\.|boulevard|bd|place|chauss[ée]e|square|"
     r"quai|all[ée]e|dr[èe]ve|chemin|impasse|m[ée]thode|loi|arr[êe]t|affaire|fondation|institut|"
     r"universit[ée]|[ée]cole|coll[èe]ge|lyc[ée]e|ath[ée]n[ée]e|h[ôo]pital|clinique|centre|prix|"
-    r"salle|stade|parc|gare|roi|reine|prince|princesse|pape|royal|royale|straat|laan|plein)[ \t]*$"
+    r"salle|stade|parc|gare|roi|reine|prince|princesse|pape|royal|royale|straat|laan|plein)[ \t]*\Z"
 )
 """Ce qui précède un prénom qui ne désigne pas une personne du dossier
 (« rue Jean Jaurès », « le Roi Baudouin », « Institut Jules Bordet »)."""
@@ -839,6 +855,38 @@ def _validate_single_first_name(m: re.Match, text: str, score: float) -> Optiona
     if _NOT_A_NAME_BEFORE_RE.search(text, max(0, m.start() - 25), m.start()):
         return None
     return Match(m.start("name"), m.end("name"), score)
+
+
+_LOWER_WORD = rf"[{LOWER}][{LOWER}'’-]*"
+_LOWERCASE_TITLED_RE = re.compile(
+    # « Monsieur jean dupont » (texte saisi ou OCR sans majuscules).
+    rf"(?<![\w-])(?:Monsieur|Madame|Mademoiselle|Mme|Mlle|M\.|Me|Ma[îi]tre|Mr\.?)[ \t]+"
+    rf"(?P<name>{_LOWER_WORD}(?:[ \t]+{_LOWER_WORD}){{0,3}})"
+)
+_NOT_NAME_AFTER_FIRST_NAME: frozenset[str] = frozenset(_FRENCH_STOP_WORDS) | {
+    "declare", "déclare", "expose", "conteste", "sollicite", "demande", "comparaît", "comparait",
+    "signe", "reconnaît", "reconnait", "affirme", "indique", "précise", "soutient", "explique",
+    "confirme", "plaide", "conclut", "intervient", "était", "sera", "sont", "domicilié",
+    "domiciliée", "né", "née", "âgé", "âgée", "épouse", "époux", "veuve", "assisté", "assistée",
+    "représenté", "représentée", "ook", "en", "et", "ou",
+}
+"""Mots qui terminent un nom écrit en minuscules (« Madame sophie lemaire déclare »)."""
+
+
+def _validate_lowercase_titled(m: re.Match, text: str, score: float) -> Optional[Match]:
+    """Nom en minuscules après une civilité, s'il commence par un prénom connu :
+    « Monsieur le juge », « Madame est absente » ne sont pas concernés."""
+    words = list(re.finditer(r"\S+", m.group("name")))
+    first = words[0].group(0)
+    if not all(fold(part) in FIRST_NAMES for part in first.split("-") if part):
+        return None
+    end = words[0].end()
+    for word in words[1:]:
+        if word.group(0) in _NOT_NAME_AFTER_FIRST_NAME:
+            break
+        end = word.end()
+    start = m.start("name")
+    return Match(start, start + end, score)
 
 
 _INITIAL_NAME_RE = re.compile(
@@ -970,7 +1018,8 @@ _ADDRESS_FIELD_RE = _field(
     r"r[ée]sidence|lieu[ \t]+de[ \t]+r[ée]sidence|adres|woonplaats|woonadres|address|"
     r"demeurant(?:[ \t]+(?:à|au))?"
 )
-_BIRTHPLACE_FIELD_RE = _field(r"lieu[ \t]+de[ \t]+naissance|n[ée]e?[ \t]+à|geboorteplaats|place[ \t]+of[ \t]+birth")
+_BIRTHPLACE_FIELD_RE = _field(
+    r"lieu[ \t]+de[ \t]+naissance|n[ée](?:e|\(e\))?[ \t]+à|geboorteplaats|place[ \t]+of[ \t]+birth")
 _BIRTHDATE_FIELD_RE = _field(r"date[ \t]+de[ \t]+naissance|n[ée]\(?e?\)?[ \t]+le|geboortedatum|date[ \t]+of[ \t]+birth|DOB")
 _NATIONALITY_FIELD_RE = _field(r"nationalit[ée]|nationaliteit|nationality")
 _NN_FIELD_RE = _field(
@@ -1011,6 +1060,12 @@ _EMAIL_RE = re.compile(
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}(?![\w])"
 )
 
+_STAFF_NUMBER_RE = re.compile(
+    # Matricule d'un agent, d'un travailleur : identifie la personne.
+    r"(?i:matricule|n°[ \t]*de[ \t]+matricule|stamnummer)[ \t]*(?:n[°ºo˚]\.?)?[ \t]*:?[ \t]*"
+    r"(?P<num>[A-Z]{0,3}\d[\dA-Z./-]{2,15})(?![\w/-])"
+)
+
 _PLATE_CONTEXT = _ctx(r"plaque", r"immatricul\w*", r"v[ée]hicule", r"voiture",
                       r"nummerplaat", r"kenteken", r"chssis", r"camionnette")
 
@@ -1048,6 +1103,7 @@ def _build_rules() -> list[Rule]:
         Rule("FR_NUM_ROLE", _ROLE_NUMBERS_BEFORE_ROLE_RE, 0.9, validator=_validate_reference),
         Rule("CASE_REFERENCE", _CASE_REF_RE, 0.85, validator=_validate_reference),
         Rule("CASE_REFERENCE", _PORTALIS_RE, 0.9, validator=_reference_validator(min_digits=1)),
+        Rule("STAFF_NUMBER", _STAFF_NUMBER_RE, 0.9, validator=_reference_validator(min_digits=3)),
         # --- Coordonnées ------------------------------------------------------
         Rule("EMAIL_ADDRESS", _EMAIL_RE, 1.0),
         Rule("PHONE_NUMBER", _PHONE_NATIONAL_RE, 0.75, validator=_validate_phone,
@@ -1072,6 +1128,7 @@ def _build_rules() -> list[Rule]:
         # --- Personnes --------------------------------------------------------
         Rule("PERSON", _TITLED_PERSON_RE, 0.9, group="name", validator=_validate_titled_person),
         Rule("PERSON", _SOUSSIGNE_RE, 0.9, group="name", validator=_validate_titled_person),
+        Rule("PERSON", _LOWERCASE_TITLED_RE, 0.85, group="name", validator=_validate_lowercase_titled),
         Rule("PERSON", _NAME_FIELD_RE, 0.85, group="value", validator=_field_validator(person=True)),
         Rule("PERSON", _CARD_NAME_RE, 0.8, group="value", validator=_validate_card_name),
         Rule("PERSON", _INITIAL_NAME_RE, 0.8, group="name", validator=_validate_initial_name),
@@ -1083,7 +1140,10 @@ def _build_rules() -> list[Rule]:
         Rule("BIRTH_DATE", _BIRTH_DATE_NL_RE, 0.95, group="date"),
         Rule("BIRTH_DATE", _BIRTH_DATE_DEGREE_RE, 0.85, group="date"),
         Rule("BIRTH_DATE", _BIRTHDATE_FIELD_RE, 0.9, group="value", validator=_field_validator()),
-        Rule("LOCATION", _BIRTHPLACE_FIELD_RE, 0.8, group="value", validator=_field_validator()),
+        # Type propre : un lieu de même position trouvé par le NER serait sinon
+        # fusionné avec lui par Presidio, puis conservé comme lieu sans lien
+        # avec une personne.
+        Rule("BIRTH_PLACE", _BIRTHPLACE_FIELD_RE, 0.85, group="value", validator=_field_validator()),
         Rule("NRP", _NATIONALITY_RE, 0.85, group="value"),
         Rule("NRP", _NATIONALITY_FIELD_RE, 0.8, group="value", validator=_field_validator(min_alnum=3)),
         Rule("BE_NATIONAL_NUMBER", _NN_FIELD_RE, 0.95, group="value",

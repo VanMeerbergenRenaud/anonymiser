@@ -86,6 +86,27 @@ Yvonne Zeynep Zineb Zoé Zohra
 FIRST_NAMES: frozenset[str] = frozenset(fold(n) for n in _NAMES.split())
 """Prénoms (forme « fold »)."""
 
+_MALE_BLOCK, _FEMALE_BLOCK = _NAMES.strip().split("\n\n")
+
+UNISEX_FIRST_NAMES: frozenset[str] = frozenset(fold(n) for n in """
+Claude Dominique Camille Kim Andrea Sacha Charlie Alex Noor Lien An Ann Jan Joke Dany Lore
+""".split())
+"""Prénoms portés par des hommes et des femmes : n'indiquent pas le genre."""
+
+MALE_FIRST_NAMES: frozenset[str] = frozenset(fold(n) for n in _MALE_BLOCK.split()) - UNISEX_FIRST_NAMES
+FEMALE_FIRST_NAMES: frozenset[str] = frozenset(fold(n) for n in _FEMALE_BLOCK.split()) - UNISEX_FIRST_NAMES
+
+
+def first_name_gender(token: str) -> str | None:
+    """« M » ou « F » si le prénom l'indique sans ambiguïté (« Anne » → F,
+    « Jean-Marie » → M d'après sa première partie), sinon ``None``."""
+    first = fold(token.split("-")[0]) if token else ""
+    if first in MALE_FIRST_NAMES and first not in FEMALE_FIRST_NAMES:
+        return "M"
+    if first in FEMALE_FIRST_NAMES and first not in MALE_FIRST_NAMES:
+        return "F"
+    return None
+
 AMBIGUOUS_FIRST_NAMES: frozenset[str] = frozenset(fold(n) for n in """
 Claude Dominique Camille Marine Victoria Florence Nancy Valence Lourdes Rose Pierre Ange
 Aurore Constance Prudence Blanche Olive Mai Avril France Jordan Paris Orange Kim Ben An Ann

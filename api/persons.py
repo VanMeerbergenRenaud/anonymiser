@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
+from api.first_names import first_name_gender
 from api.recognizers import NAME_PARTICLES, UPPER, fold
 from api.spans import Detection, SpanIndex
 
@@ -45,7 +46,7 @@ _INITIAL = rf"[{UPPER}]\.(?:-[{UPPER}]\.)?"
 
 _INITIAL_TOKEN_RE = re.compile(rf"[{UPPER}]\.(?:-?[{UPPER}]\.)*")
 _INITIALS_BEFORE_RE = re.compile(
-    rf"(?<![\w.'’-])(?:{_INITIAL}[ \t]+)+(?:{_PARTICLE}[ \t]+|[dD]['’])*$"
+    rf"(?<![\w.'’-])(?:{_INITIAL}[ \t]+)+(?:{_PARTICLE}[ \t]+|[dD]['’])*\Z"
 )
 
 
@@ -137,14 +138,14 @@ ABBREVIATIONS: frozenset[str] = frozenset({
 
 _DETERMINER_BEFORE_RE = re.compile(
     r"(?i)(?<![\w])(?:le|la|les|l['’]|un|une|du|des|au|aux|ce|cet|cette|ces|son|sa|ses|"
-    r"leur|leurs|notre|votre|chaque|tout|toute)[ \t]*$"
+    r"leur|leurs|notre|votre|chaque|tout|toute)[ \t]*\Z"
 )
 _PERSON_TITLE_BEFORE_RE = re.compile(
     r"(?<![\w])(?:Monsieur|Madame|Mademoiselle|Messieurs|Mesdames|M\.|Mme|Mlle|Me|Ma[îi]tre|"
     r"Dr|Docteur|(?i:l['’]enfant|les enfants|enfants?|mineure?s?|t[ée]moins?|[ée]poux|[ée]pouse|"
     r"veuve|fils|fille|fr[èe]re|s[œo]e?ur|p[èe]re|m[èe]re|conjointe?|requ[ée]rante?|appelante?|"
     r"intim[ée]e?|d[ée]fendeur|d[ée]fenderesse|demandeur|demanderesse|pr[ée]venue?|victime|"
-    r"pr[ée]nomm[ée]e?|d[ée]nomm[ée]e?|sieur|dame))[ \t]*$"
+    r"pr[ée]nomm[ée]e?|d[ée]nomm[ée]e?|sieur|dame))[ \t]*\Z"
 )
 _PERSON_CONTEXT_AFTER_RE = re.compile(
     r"[ \t]*,?[ \t]*\(?[ \t]*(?i:n[ée]e?s?|domicili[ée]e?s?|demeurant|r[ée]sidant|assist[ée]e?s?|"
@@ -197,15 +198,63 @@ def find_initials_persons(text: str, occupied: SpanIndex) -> list[Detection]:
 
 _MALE_BEFORE_RE = re.compile(
     r"(?<![\w])(?:Monsieur|Messieurs|Mr|MM|Dhr|[Dd]e[ \t]+heer|Meneer|Mijnheer|[Ss]ieur|"
-    r"[ée]poux|[Ff]ils|[Ff]r[èe]re|[Pp][èe]re|[Nn]eveu|[Oo]ncle)\.?[ \t,]*$"
+    r"[ée]poux|[Ff]ils|[Ff]r[èe]re|[Pp][èe]re|[Nn]eveu|[Oo]ncle)\.?[ \t,]*\Z"
 )
 _FEMALE_BEFORE_RE = re.compile(
     r"(?<![\w])(?:Madame|Mesdames|Mme|Mmes|Mlle|Mlles|Mademoiselle|Mevr|Mevrouw|[Dd]ame|"
-    r"[ée]pouse|[Vv]euve|[Nn][ée]e|[Ff]ille|[Ss][œo]e?ur|[Mm][èe]re|[Nn]i[èe]ce|[Tt]ante)\.?[ \t,]*$"
+    r"[ée]pouse|[Vv]euve|[Nn][ée]e|[Ff]ille|[Ss][œo]e?ur|[Mm][èe]re|[Nn]i[èe]ce|[Tt]ante)\.?[ \t,]*\Z"
 )
-_MAIDEN_NAME_BEFORE_RE = re.compile(r",?[ \t]*(?:n[ée]e|[ée]pouse|veuve|[ée]p\.)[ \t]+$")
-_FIRST_NAME_FIELD_RE = re.compile(r"(?i)pr[ée]noms?[ \t]*[:：][ \t]*$")
-_SURNAME_FIELD_RE = re.compile(r"(?i)(?<![\w])nom(?:[ \t]+de[ \t]+famille)?[ \t]*[:：][ \t]*$")
+_ROLES_F = (r"juge|pr[ée]sidente|greffi[èe]re|avocate|conseill[èe]re|substitute|experte|notaire|"
+            r"t[ée]moin|demanderesse|d[ée]fenderesse|requ[ée]rante|appelante|intim[ée]e|pr[ée]venue|"
+            r"victime|patiente|cliente|coll[èe]gue|m[èe]re|fille|s[œo]e?ur|[ée]pouse|veuve|tante|"
+            r"ni[èe]ce|inspectrice|commissaire|agente|m[ée]diatrice|curatrice|tutrice|gérante")
+_ROLES_M = (r"juge|pr[ée]sident|greffier|avocat|conseiller|substitut|expert|notaire|t[ée]moin|"
+            r"demandeur|d[ée]fendeur|requ[ée]rant|appelant|intim[ée]|pr[ée]venu|patient|client|"
+            r"coll[èe]gue|p[èe]re|fils|fr[èe]re|[ée]poux|veuf|oncle|neveu|inspecteur|commissaire|"
+            r"agent|m[ée]diateur|curateur|tuteur|g[ée]rant")
+_FEMALE_ROLE_BEFORE_RE = re.compile(rf"(?<![\w])(?:[Ll]a|[Uu]ne|[Ll]['’]|[Ss]a)[ \t]*(?:{_ROLES_F})[ \t,]*\Z")
+_MALE_ROLE_BEFORE_RE = re.compile(rf"(?<![\w])(?:[Ll]e|[Uu]n|[Ss]on)[ \t]+(?:{_ROLES_M})[ \t,]*\Z")
+_FEMALE_AFTER_RE = re.compile(
+    r"[ \t]*,[ \t]*(?:(?:la|sa|une|l['’])[ \t]*)?(?:avocate|pr[ée]sidente|greffi[èe]re|conseill[èe]re|"
+    r"experte|demanderesse|d[ée]fenderesse|requ[ée]rante|appelante|intim[ée]e|pr[ée]venue|n[ée]e|"
+    r"[ée]pouse|veuve|m[èe]re|fille|s[œo]e?ur|inspectrice|agente|m[ée]diatrice|curatrice|tutrice)(?![\w])"
+)
+_MALE_AFTER_RE = re.compile(
+    r"[ \t]*,[ \t]*(?:(?:le|son|un)[ \t]+)?(?:avocat|pr[ée]sident|greffier|conseiller|expert|demandeur|"
+    r"d[ée]fendeur|requ[ée]rant|appelant|intim[ée]|pr[ée]venu|n[ée]|[ée]poux|veuf|p[èe]re|fils|fr[èe]re|"
+    r"inspecteur|m[ée]diateur|curateur|tuteur)(?![\w])"
+)
+_TITLED_BEFORE_RE = re.compile(
+    r"(?<![\w])(?:Monsieur|Madame|Mademoiselle|Mme|Mlle|M|Me|Ma[îi]tre|Dr|Mr|Docteur)\.?[ \t]*\Z"
+)
+_PREFIX_PARTICLES = frozenset({"BEN", "BOU", "BENT"})
+"""Particules (« Ben Saïd ») qui sont aussi des prénoms (« Ben ») : particules
+seulement après une civilité, un prénom, ou en capitales devant un nom."""
+
+
+def _gender(text: str, d: Detection, before: str, firsts: list[str]) -> Optional[str]:
+    """Genre d'une mention : civilité, accord d'une qualité (« la greffière
+    Dubois », « Dubois, avocate »), sinon prénom (« Anne » → F)."""
+    if _MALE_BEFORE_RE.search(before):
+        return "M"
+    if _FEMALE_BEFORE_RE.search(before) or _FEMALE_ROLE_BEFORE_RE.search(before):
+        return "F"
+    if _MALE_ROLE_BEFORE_RE.search(before):
+        return "M"
+    after = text[d.end:d.end + 40]
+    if _FEMALE_AFTER_RE.match(after):
+        return "F"
+    if _MALE_AFTER_RE.match(after):
+        return "M"
+    genders = {first_name_gender(f) for f in firsts} - {None}
+    return genders.pop() if len(genders) == 1 else None
+
+
+_MAIDEN_NAME_BEFORE_RE = re.compile(r",?[ \t]*(?:n[ée]e|[ée]pouse|veuve|[ée]p\.)[ \t]+\Z")
+_PAREN_FIRST_NAME_RE = re.compile(r"[ \t]*\([ \t]*")
+"""« Mme MARTIN-LEGRAND (Sophie) » : le prénom entre parenthèses suit le nom."""
+_FIRST_NAME_FIELD_RE = re.compile(r"(?i)pr[ée]noms?[ \t]*[:：][ \t]*\Z")
+_SURNAME_FIELD_RE = re.compile(r"(?i)(?<![\w])nom(?:[ \t]+de[ \t]+famille)?[ \t]*[:：][ \t]*\Z")
 
 
 @dataclass
@@ -257,13 +306,15 @@ def _initials_of(firsts: set[str]) -> set[str]:
 def _parse(text: str, d: Detection) -> _Mention:
     value = text[d.start:d.end]
     before = text[max(0, d.start - 30):d.start]
-    gender = "M" if _MALE_BEFORE_RE.search(before) else "F" if _FEMALE_BEFORE_RE.search(before) else None
+    titled = _TITLED_BEFORE_RE.search(before) is not None
     initials: set[str] = set()
     wildcard = False
     names: list[tuple[str, str]] = []
-    for raw in re.split(r"[\s,;:()«»\"]+", value):
-        if not raw:
-            continue
+    tokens = [t for t in re.split(r"[\s,;:()«»\"]+", value) if t]
+    for index, raw in enumerate(tokens):
+        if (fold(raw) in _PREFIX_PARTICLES and index + 1 < len(tokens)
+                and (titled or names or initials or raw.isupper())):
+            continue  # « Madame Ben Saïd », « Fatima BEN SAÏD » : particule du nom
         if _INITIAL_TOKEN_RE.fullmatch(raw):
             if raw == "M." and not names and not initials:
                 wildcard = True
@@ -284,6 +335,8 @@ def _parse(text: str, d: Detection) -> _Mention:
     elif names:
         firsts = {k for _, k in names[:-1]}
         surnames = {names[-1][1]}
+    first_raw = [raw for raw, k in names if k in firsts]
+    gender = _gender(text, d, before, first_raw)
     return _Mention(d, firsts, initials, surnames, gender, wildcard)
 
 
@@ -373,6 +426,10 @@ def assign_person_labels(text: str, persons: list[Detection], base: str,
         cluster = None
         if previous is not None and _MAIDEN_NAME_BEFORE_RE.fullmatch(text[previous.end:m.det.start]):
             cluster = assignment[id(previous)]  # « Marie DUPONT, née MARTIN »
+        elif (previous is not None and _PAREN_FIRST_NAME_RE.fullmatch(text[previous.end:m.det.start])
+              and re.match(r"[ \t]*\)", text[m.det.end:])):
+            cluster = assignment[id(previous)]  # « MARTIN-LEGRAND (Sophie) »
+            cluster.firsts.add(word)
         elif _FIRST_NAME_FIELD_RE.search(before):
             for other in reversed(mentions[:index]):
                 if m.det.start - other.det.end > 120:
